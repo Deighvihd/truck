@@ -74,7 +74,7 @@ where
         op.push(chunk);
         Some(())
     })?;
-    let vec: Vec<_> = pre_faces
+    let vec = pre_faces
         .into_iter()
         .map(|pre_face| {
             let surface = face.surface();
@@ -89,13 +89,15 @@ where
                 .into_iter()
                 .map(|chunk| chunk.wire.deref().clone())
                 .collect();
-            let mut new_face = Face::debug_new(wires, surface);
+            // Degenerate splits (e.g. when the other solid removes the whole
+            // face) give invalid wires: fail the operation, don't panic.
+            let mut new_face = Face::try_new(wires, surface).ok()?;
             if !face.orientation() {
                 new_face.invert();
             }
-            (new_face, status)
+            Some((new_face, status))
         })
-        .collect();
+        .collect::<Option<Vec<_>>>()?;
     Some(vec)
 }
 

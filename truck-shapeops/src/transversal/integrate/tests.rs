@@ -48,3 +48,23 @@ fn tool_engulfs_solid() {
     cylinder.not();
     assert!(crate::and(&cube, &cylinder, 0.05).is_none());
 }
+
+// A tool engulfing the solid with a face on the solid's face: splitting the
+// faces gave invalid wires and `Face::debug_new` panicked ("This wire is not
+// simple.") in debug builds, or built an invalid face in release.
+#[test]
+fn engulfing_tool_with_coincident_cap() {
+    let v = builder::vertex(Point3::origin());
+    let e = builder::tsweep(&v, Vector3::unit_x() * 100.0);
+    let f = builder::tsweep(&e, Vector3::unit_y() * 50.0);
+    let plate: Solid = builder::tsweep(&f, Vector3::unit_z() * 25.0);
+
+    let v0 = builder::vertex(Point3::new(200.0, 25.0, -1.0));
+    let v1 = builder::vertex(Point3::new(-100.0, 25.0, -1.0));
+    let arc0 = builder::circle_arc(&v0, &v1, Point3::new(50.0, 175.0, -1.0));
+    let arc1 = builder::circle_arc(&v1, &v0, Point3::new(50.0, -125.0, -1.0));
+    let disk: Face = builder::try_attach_plane(&[wire![arc0, arc1]]).unwrap();
+    let mut cylinder: Solid = builder::tsweep(&disk, Vector3::unit_z() * 26.0);
+    cylinder.not();
+    assert!(crate::and(&plate, &cylinder, 0.125).is_none());
+}
