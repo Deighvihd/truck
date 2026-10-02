@@ -329,7 +329,9 @@ where
                 } else {
                     new_boundary[len - edge_idx - 1] = right_face_back_edge.clone();
                     new_boundary[(2 * len - edge_idx - 2) % len] = left_face_front_edge.clone();
-                    new_boundary.insert(len - edge_idx, fillet_edge.clone());
+                    // Oriented index `edge_idx` is absolute index
+                    // `len - edge_idx - 1`; the fillet edge goes before it.
+                    new_boundary.insert(len - edge_idx - 1, fillet_edge.clone());
                 }
             }
             new_boundary

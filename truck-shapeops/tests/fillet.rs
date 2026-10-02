@@ -50,6 +50,7 @@ impl ToSameGeometry<Curve> for PCurve<BSplineCurve<Point2>, Surface> {
     From,
 )]
 enum Surface {
+    Plane(Plane),
     Nurbs(NurbsSurface<Vector4>),
     Fillet(ApproxFilletSurface<Box<Self>, Box<Self>>),
     Processor(Processor<Box<Self>, Matrix4>),
@@ -59,9 +60,18 @@ impl ToSameGeometry<Surface> for ApproxFilletSurface<Surface, Surface> {
     fn to_same_geometry(&self) -> Surface { Surface::Fillet(self.clone().into()) }
 }
 
+impl ToSameGeometry<Surface> for Plane {
+    fn to_same_geometry(&self) -> Surface { Surface::Plane(*self) }
+}
+
+impl ToSameGeometry<Curve> for Line<Point3> {
+    fn to_same_geometry(&self) -> Curve { Curve::Line(*self) }
+}
+
 impl Invertible for Surface {
     fn invert(&mut self) {
         match self {
+            Self::Plane(plane) => plane.invert(),
             Self::Nurbs(surface) => surface.invert(),
             Self::Fillet(_) => {
                 let mut processor = Processor::new(Box::new(self.clone()));
@@ -413,4 +423,63 @@ fn complex_surface() {
     poly.put_together_same_attrs(1e-4);
 
     assert_eq!(poly.shell_condition(), ShellCondition::Closed);
+}
+
+// A side face whose orientation flag is reversed (like the bottom face of
+// an extrusion) used to come back with an unclosed boundary: "This wire is
+// not closed."
+#[test]
+fn fillet_with_reversed_side_face() {
+    use truck_modeling::primitive;
+
+    let bbox = BoundingBox::from_iter([Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0)]);
+    let mut shell: Shell = primitive::cuboid(bbox).into_boundaries().pop().unwrap();
+    let find_face = |shell: &Shell, p: Point3| {
+        shell
+            .face_iter()
+            .position(|face| face.surface().search_parameter(p, None, 10).is_some())
+            .unwrap()
+    };
+    // Same geometry, orientation flag reversed.
+    let bottom = find_face(&shell, Point3::new(0.5, 0.5, 0.0));
+    let mut surface = shell[bottom].surface();
+    surface.invert();
+    let wires = shell[bottom]
+        .boundaries()
+        .iter()
+        .map(|w| w.inverse())
+        .collect();
+    let mut reversed = Face::new(wires, surface);
+    reversed.invert();
+    assert!(!reversed.orientation());
+    shell[bottom] = reversed;
+
+    let face0 = find_face(&shell, Point3::new(0.5, 0.0, 0.5));
+    let face1 = find_face(&shell, Point3::new(1.0, 0.5, 0.5));
+    let side1 = find_face(&shell, Point3::new(0.5, 0.5, 1.0));
+    let edge = shell
+        .edge_iter()
+        .find(|edge| {
+            let on = |p: Point3| p.x.near(&1.0) && p.y.near(&0.0);
+            on(edge.front().point()) && on(edge.back().point())
+        })
+        .unwrap();
+    let res = fillet_with_side(
+        &shell[face0],
+        &shell[face1],
+        edge.id(),
+        Some(&shell[bottom]),
+        Some(&shell[side1]),
+        0.3,
+        0.001,
+    )
+    .unwrap();
+    let side0 = res.side0.unwrap();
+    assert!(!side0.orientation());
+    shell[face0] = res.simple_fillet.face0;
+    shell[face1] = res.simple_fillet.face1;
+    shell[bottom] = side0;
+    shell[side1] = res.side1.unwrap();
+    shell.push(res.simple_fillet.fillet);
+    assert_eq!(shell.shell_condition(), ShellCondition::Closed);
 }
