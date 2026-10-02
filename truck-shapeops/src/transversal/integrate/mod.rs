@@ -100,7 +100,7 @@ fn process_one_pair_of_shells<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
     cls1.integrate_by_component();
     let [mut and0, mut or0, unknown0] = cls0.and_or_unknown();
     unknown0.into_iter().try_for_each(|face| {
-        let pt = face.boundaries()[0].vertex_iter().next().unwrap().point();
+        let pt = face.boundaries()[0].vertex_iter().next()?.point();
         let dir = hash::take_one_unit(pt);
         let count = poly_shell1.iter().try_fold(0, |count, face| {
             let poly = face.surface()?;
@@ -115,7 +115,7 @@ fn process_one_pair_of_shells<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
     })?;
     let [mut and1, mut or1, unknown1] = cls1.and_or_unknown();
     unknown1.into_iter().try_for_each(|face| {
-        let pt = face.boundaries()[0].vertex_iter().next().unwrap().point();
+        let pt = face.boundaries()[0].vertex_iter().next()?.point();
         let dir = hash::take_one_unit(pt);
         let count = poly_shell0.iter().try_fold(0, |count, face| {
             let poly = face.surface()?;
@@ -144,8 +144,8 @@ pub fn and<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
 ) -> Option<Solid<Point3, C, S>> {
     let mut iter0 = solid0.boundaries().iter();
     let mut iter1 = solid1.boundaries().iter();
-    let shell0 = iter0.next().unwrap();
-    let shell1 = iter1.next().unwrap();
+    let shell0 = iter0.next()?;
+    let shell1 = iter1.next()?;
     let [mut and_shell, _] = process_one_pair_of_shells(shell0, shell1, tol)?;
     for shell in iter0 {
         let [res, _] = process_one_pair_of_shells(&and_shell, shell, tol)?;
@@ -156,7 +156,7 @@ pub fn and<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
         and_shell = res;
     }
     let boundaries = and_shell.connected_components();
-    Some(Solid::new(boundaries))
+    Solid::try_new(boundaries).ok()
 }
 
 /// OR operation between two solids.
@@ -167,8 +167,8 @@ pub fn or<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
 ) -> Option<Solid<Point3, C, S>> {
     let mut iter0 = solid0.boundaries().iter();
     let mut iter1 = solid1.boundaries().iter();
-    let shell0 = iter0.next().unwrap();
-    let shell1 = iter1.next().unwrap();
+    let shell0 = iter0.next()?;
+    let shell1 = iter1.next()?;
     let [_, mut or_shell] = process_one_pair_of_shells(shell0, shell1, tol)?;
     for shell in iter0 {
         let [_, res] = process_one_pair_of_shells(&or_shell, shell, tol)?;
@@ -179,7 +179,7 @@ pub fn or<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
         or_shell = res;
     }
     let boundaries = or_shell.connected_components();
-    Some(Solid::new(boundaries))
+    Solid::try_new(boundaries).ok()
 }
 
 #[cfg(test)]

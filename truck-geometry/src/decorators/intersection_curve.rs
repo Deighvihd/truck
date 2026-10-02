@@ -239,7 +239,15 @@ where
 {
     type Point = Point3;
     type Vector = Vector3;
-    fn subs(&self, t: f64) -> Point3 { self.search_triple(t, 100).unwrap().0 }
+    /// Falls back to the leader's point where the projection onto both
+    /// surfaces fails (the leader approximates the curve), instead of
+    /// panicking.
+    fn subs(&self, t: f64) -> Point3 {
+        match self.search_triple(t, 100) {
+            Some((point, _, _)) => point,
+            None => self.leader.subs(t),
+        }
+    }
     fn der(&self, t: f64) -> Vector3 {
         let IntersectionCurve {
             surface0,
@@ -247,7 +255,9 @@ where
             leader,
         } = self;
         let [l, l_der, l_der2] = leader.ders(2, t).to_array::<3>();
-        let (c, uv0, uv1) = self.search_triple(t, 100).unwrap();
+        let Some((c, uv0, uv1)) = self.search_triple(t, 100) else {
+            return l_der;
+        };
         let (n0, n1) = (surface0.normal(uv0.x, uv0.y), surface1.normal(uv1.x, uv1.y));
         let n = n0.cross(n1);
         let k = (l_der.magnitude2() - (c - l).dot(l_der2)) / n.dot(l_der);
@@ -265,7 +275,9 @@ where
         self.ders(n, t)[n]
     }
     fn ders(&self, n: usize, t: f64) -> CurveDers<Vector3> {
-        let (c, uv0, uv1) = self.search_triple(t, 100).unwrap();
+        let Some((c, uv0, uv1)) = self.search_triple(t, 100) else {
+            return self.leader.ders(n, t);
+        };
         let mut uv0ders = CurveDers::new(n);
         uv0ders[0] = uv0.to_vec();
         let mut uv1ders = CurveDers::new(n);
