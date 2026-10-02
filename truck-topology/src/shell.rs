@@ -447,9 +447,27 @@ impl<P, C, S> Shell<P, C, S> {
     pub fn connected_components(&self) -> Vec<Shell<P, C, S>> {
         let mut adjacency = self.face_adjacency();
         let components = create_components(&mut adjacency);
+        // The search visits faces in hash-map order, which depends on memory
+        // addresses. Return the faces in this shell's order, and the
+        // components by their first face, so the result is deterministic.
+        let index: HashMap<FaceID<S>, usize> = self
+            .face_iter()
+            .enumerate()
+            .map(|(i, face)| (face.id(), i))
+            .collect();
+        let mut components: Vec<Vec<usize>> = components
+            .into_iter()
+            .map(|vec| {
+                let mut indices: Vec<usize> =
+                    vec.into_iter().map(|face| index[&face.id()]).collect();
+                indices.sort_unstable();
+                indices
+            })
+            .collect();
+        components.sort_unstable();
         components
             .into_iter()
-            .map(|vec| vec.into_iter().cloned().collect())
+            .map(|indices| indices.into_iter().map(|i| self[i].clone()).collect())
             .collect()
     }
 

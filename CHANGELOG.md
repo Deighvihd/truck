@@ -4,6 +4,7 @@ The version is of the bottom crate `truck-rendimpl`.
 
 ## Unreleased
 
+- `Shell::connected_components` returns faces in the shell's order (it depended on memory addresses), so shape operations are deterministic.
 - Fix `fillet_with_side` for side faces with a reversed orientation flag (the fillet edge was inserted one place off, leaving an unclosed wire).
 - Fillet returns `None` for a zero or negative radius instead of not terminating.
 - Shape operations return `None` instead of panicking when the result is not a closed solid; `IntersectionCurve` falls back to its leader where projection fails instead of panicking.
