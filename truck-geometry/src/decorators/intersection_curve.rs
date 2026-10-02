@@ -91,6 +91,28 @@ where
             trials,
         )
     }
+    /// [`search_triple`](Self::search_triple), starting from known
+    /// parameters on both surfaces instead of searching for them. Much
+    /// faster when nearby parameters are known, e.g. while walking along the
+    /// curve.
+    #[inline(always)]
+    pub fn search_triple_with_hints(
+        &self,
+        t: f64,
+        hint0: (f64, f64),
+        hint1: (f64, f64),
+        trials: usize,
+    ) -> Option<(Point3, Point2, Point2)> {
+        double_projection(
+            self.surface0(),
+            Some(hint0),
+            self.surface1(),
+            Some(hint1),
+            self.leader.subs(t),
+            self.leader.der(t),
+            trials,
+        )
+    }
     /// Search triple value of the point nearest to `point`.
     /// - the coordinate on 3D space
     /// - the uv coordinate on `self.surface0()`
@@ -287,7 +309,80 @@ where
     type Point = Point3;
     #[inline(always)]
     fn parameter_division(&self, range: (f64, f64), tol: f64) -> (Vec<f64>, Vec<Point3>) {
-        algo::curve::parameter_division(self, range, tol)
+        // Same subdivision as `algo::curve::parameter_division`, but each new
+        // point starts from its neighbours' surface parameters. Unhinted
+        // evaluation searches a grid over both surfaces for every point.
+        let ends = (
+            self.search_triple(range.0, TRIALS),
+            self.search_triple(range.1, TRIALS),
+        );
+        let (Some(start), Some(end)) = ends else {
+            return algo::curve::parameter_division(self, range, tol);
+        };
+        let mut division = (vec![range.0], vec![start.0]);
+        self.sub_parameter_division(range, (start, end), tol, TRIALS, &mut division);
+        division
+    }
+}
+
+type Triple = (Point3, Point2, Point2);
+const TRIALS: usize = 100;
+
+impl<C, S0, S1> IntersectionCurve<C, S0, S1>
+where
+    C: ParametricCurve3D,
+    S0: ParametricSurface3D + SearchNearestParameter<D2, Point = Point3>,
+    S1: ParametricSurface3D + SearchNearestParameter<D2, Point = Point3>,
+{
+    /// The point at `t`, starting from parameters interpolated between two
+    /// known points `ends` at ratio `s`; falls back to a full search when the
+    /// hinted solve fails or lands implausibly far from the leader.
+    fn hinted_triple(&self, t: f64, ends: (&Triple, &Triple), s: f64) -> Option<Triple> {
+        let (a, b) = ends;
+        let hint0 = a.1 + (b.1 - a.1) * s;
+        let hint1 = a.2 + (b.2 - a.2) * s;
+        let bound = a.0.distance(b.0) + self.leader.subs(t).distance(a.0.midpoint(b.0));
+        self.search_triple_with_hints(t, hint0.into(), hint1.into(), TRIALS)
+            .filter(|(p, _, _)| p.distance(a.0.midpoint(b.0)) <= bound.max(TOLERANCE))
+            .or_else(|| self.search_triple(t, TRIALS))
+    }
+
+    /// Mirrors `algo::curve::sub_parameter_division`, appending the points
+    /// after `range.0` to `division`.
+    fn sub_parameter_division(
+        &self,
+        range: (f64, f64),
+        ends: (Triple, Triple),
+        tol: f64,
+        trials: usize,
+        division: &mut (Vec<f64>, Vec<Point3>),
+    ) {
+        let gen = ends.0 .0.midpoint(ends.1 .0);
+        let p = 0.5 + (0.2 * HashGen::hash1(gen) - 0.1);
+        let t = range.0 * (1.0 - p) + range.1 * p;
+        let mid = ends.0 .0 + (ends.1 .0 - ends.0 .0) * p;
+        let close = match self.hinted_triple(t, (&ends.0, &ends.1), p) {
+            Some((point, _, _)) => point.distance2(mid) < tol * tol,
+            None => true,
+        };
+        let mid_param = (range.0 + range.1) / 2.0;
+        let mid_value = match close || trials == 0 {
+            true => None,
+            false => self.hinted_triple(mid_param, (&ends.0, &ends.1), 0.5),
+        };
+        match mid_value {
+            None => {
+                division.0.push(range.1);
+                division.1.push(ends.1 .0);
+            }
+            Some(mid_value) => {
+                let (start, end) = ends;
+                let next = (range.0, mid_param);
+                self.sub_parameter_division(next, (start, mid_value), tol, trials - 1, division);
+                let next = (mid_param, range.1);
+                self.sub_parameter_division(next, (mid_value, end), tol, trials - 1, division);
+            }
+        }
     }
 }
 

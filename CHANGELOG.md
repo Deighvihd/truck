@@ -4,6 +4,7 @@ The version is of the bottom crate `truck-rendimpl`.
 
 ## Unreleased
 
+- Speed up intersection curves: `IntersectionCurve::parameter_division` and the B-spline approximation in shape operations reuse nearby surface parameters instead of searching both surfaces for every point (booleans with curved faces ~30x faster).
 - Remove `compression` feature from `vtkio`.
 - Improve `BSplineXXX::least_square`.
 - Add `BSplineXXX::least_square`.

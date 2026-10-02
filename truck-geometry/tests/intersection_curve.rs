@@ -73,3 +73,34 @@ fn cylinder_case(#[strategy = 0.0..=2.0 * PI] t: f64, #[strategy = 0usize..=4] n
         Ok(())
     })?;
 }
+
+// `parameter_division` walks the curve with hints instead of searching both
+// surfaces for every point; its points must still lie on both surfaces, in
+// order, within `tol` of the curve between them.
+#[test]
+fn parameter_division_with_hints() {
+    let line0 = Line(Point3::new(1.0, 0.0, 2.0), Point3::new(-1.0, 0.0, 2.0));
+    let cylinder0 = RevolutedCurve::by_revolution(line0, Point3::origin(), Vector3::unit_x());
+    let line1 = Line(Point3::new(1.0, 0.0, 1.0), Point3::new(1.0, 0.0, -1.0));
+    let cylinder1 = RevolutedCurve::by_revolution(line1, Point3::origin(), Vector3::unit_z());
+    let z = (1.0 + f64::sqrt(3.0)) / 2.0;
+    let lead_circle = Processor::with_transform(
+        UnitCircle::<Point3>::new(),
+        Matrix4::from_translation(z * Vector3::unit_z()),
+    );
+    let curve = IntersectionCurve::new(cylinder0, cylinder1, lead_circle);
+
+    let tol = 0.01;
+    let (params, points) = curve.parameter_division((0.0, PI), tol);
+    assert!(points.len() > 2);
+    assert!(params.windows(2).all(|w| w[0] < w[1]));
+    for (t, p) in params.iter().zip(&points) {
+        assert_near!(p.x * p.x + p.y * p.y, 1.0);
+        assert_near!(p.z * p.z + p.y * p.y, 4.0);
+        assert_near!(*p, curve.subs(*t));
+    }
+    for (w, q) in params.windows(2).zip(points.windows(2)) {
+        let mid = curve.subs((w[0] + w[1]) / 2.0);
+        assert!(mid.distance(q[0].midpoint(q[1])) < 2.0 * tol);
+    }
+}

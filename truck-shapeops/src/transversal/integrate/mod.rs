@@ -5,6 +5,9 @@ use truck_geometry::prelude::*;
 use truck_meshalgo::prelude::*;
 use truck_topology::*;
 
+mod hinted;
+use hinted::HintedIntersectionCurve;
+
 /// Only solids consisting of faces whose surface is implemented this trait can be used for set operations.
 pub trait ShapeOpsSurface:
     ParametricSurface3D
@@ -61,7 +64,9 @@ fn altshell_to_shell<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
         |c| match c {
             Alternative::FirstType(c) => Some(c.clone()),
             Alternative::SecondType(ic) => {
-                let bsp = BSplineCurve::quadratic_approximation(ic, ic.range_tuple(), tol, 100)?;
+                let hinted = HintedIntersectionCurve::new(ic, tol)?;
+                let bsp =
+                    BSplineCurve::quadratic_approximation(&hinted, ic.range_tuple(), tol, 100)?;
                 Some(
                     IntersectionCurve::new(ic.surface0().clone(), ic.surface1().clone(), bsp)
                         .into(),
