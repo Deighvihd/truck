@@ -193,6 +193,17 @@ where
     let is_filleted_edge = move |edge: &Edge<Point3, C>| edge.id() == filleted_edge_id;
     let filleted_edge = face0.edge_iter().find(is_filleted_edge)?;
 
+    // A zero or negative radius has no fillet; the construction below would
+    // not terminate (it allocated until memory ran out for radius 0).
+    let (t0, t1) = filleted_edge.curve().range_tuple();
+    let positive = (0..=8).all(|i| {
+        let r = radius.subs(t0 + (t1 - t0) * i as f64 / 8.0);
+        r.is_finite() && r > TOLERANCE
+    });
+    if !positive {
+        return None;
+    }
+
     let strict_surface = {
         let surface0 = face0.oriented_surface();
         let surface1 = face1.oriented_surface();

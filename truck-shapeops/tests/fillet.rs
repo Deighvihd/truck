@@ -135,6 +135,11 @@ fn create_simple_fillet() {
     let file = std::fs::File::create("edged-shell.obj").unwrap();
     obj::write(&poly, file).unwrap();
 
+    // No fillet for a zero or negative radius (radius 0 used to allocate
+    // until memory ran out).
+    assert!(simple_fillet(&face0, &face1, shared_edge_id, 0.0, 0.001).is_none());
+    assert!(simple_fillet(&face0, &face1, shared_edge_id, -0.3, 0.001).is_none());
+
     let res = simple_fillet(&face0, &face1, shared_edge_id, 0.3, 0.001).unwrap();
 
     let shell: Shell = [res.face0, res.face1, res.fillet].into();
