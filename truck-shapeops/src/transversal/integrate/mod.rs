@@ -66,7 +66,7 @@ fn altshell_to_shell<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
             Alternative::SecondType(ic) => {
                 let hinted = HintedIntersectionCurve::new(ic, tol)?;
                 let bsp =
-                    BSplineCurve::quadratic_approximation(&hinted, ic.range_tuple(), tol, 100)?;
+                    BSplineCurve::quadratic_approximation(&hinted, hinted.range_tuple(), tol, 100)?;
                 Some(
                     IntersectionCurve::new(ic.surface0().clone(), ic.surface1().clone(), bsp)
                         .into(),
