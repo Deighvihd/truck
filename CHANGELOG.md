@@ -4,6 +4,7 @@ The version is of the bottom crate `truck-rendimpl`.
 
 ## Unreleased
 
+- Shape operations with a tool that has a hole through it (a ring or a frame crossing a face) work: when splitting a face, a hole loop goes into the innermost outer loop around it, not the first one found or its own twin.
 - Shape operations fit intersection curves by arc length along their polyline leader. Fitting at uniform leader parameters overshot between unevenly spaced vertices, so curves ran backwards in places and the faces they bound tessellated folded over.
 - Shape operations return `None` instead of panicking (debug) or building invalid faces (release) when splitting a face gives invalid wires.
 - `Shell::connected_components` returns faces in the shell's order (it depended on memory addresses), so shape operations are deterministic.

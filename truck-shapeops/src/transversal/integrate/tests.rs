@@ -119,3 +119,52 @@ fn intersection_curves_do_not_backtrack() {
         "{volume} vs {expected}"
     );
 }
+
+fn square_wire(x0: f64, y0: f64, x1: f64, y1: f64, z: f64) -> Wire {
+    let v = [
+        builder::vertex(Point3::new(x0, y0, z)),
+        builder::vertex(Point3::new(x1, y0, z)),
+        builder::vertex(Point3::new(x1, y1, z)),
+        builder::vertex(Point3::new(x0, y1, z)),
+    ];
+    (0..4)
+        .map(|i| builder::line(&v[i], &v[(i + 1) % 4]))
+        .collect()
+}
+
+// A tool with a hole through it (a frame) crossing the plate's top face:
+// the face is split along two loops, one inside the other. The hole loop
+// was put into the first outer loop containing it (the face's own
+// boundary) rather than the innermost (the frame's outline), and a loop's
+// twin "contained" it too, so the split faces had non-simple wires.
+#[test]
+fn frame_shaped_tool() {
+    let v = builder::vertex(Point3::origin());
+    let e = builder::tsweep(&v, Vector3::unit_x() * 100.0);
+    let f = builder::tsweep(&e, Vector3::unit_y() * 50.0);
+    let plate: Solid = builder::tsweep(&f, Vector3::unit_z() * 25.0);
+
+    let outer = square_wire(10.0, 10.0, 90.0, 40.0, 10.0);
+    let inner = square_wire(40.0, 20.0, 60.0, 30.0, 10.0).inverse();
+    let frame: Face = builder::try_attach_plane(&[outer, inner]).unwrap();
+    let tool: Solid = builder::tsweep(&frame, Vector3::unit_z() * 20.0);
+
+    let joined = crate::or(&plate, &tool, 0.05).unwrap();
+    assert_eq!(joined.boundaries().len(), 1);
+    let mut hole = tool.clone();
+    hole.not();
+    let cut = crate::and(&plate, &hole, 0.05).unwrap();
+    assert_eq!(cut.boundaries().len(), 1);
+    // The plate's top: the rim round the pocket, and the island's top.
+    let tops = cut.boundaries()[0]
+        .face_iter()
+        .filter(|f| {
+            let p = f.boundaries()[0].front_vertex().unwrap().point();
+            f.boundaries().iter().all(|w| {
+                w.vertex_iter()
+                    .all(|v| (v.point().z - 25.0).abs() < 1e-6 && p.z == v.point().z)
+            })
+        })
+        .count();
+    assert_eq!(tops, 2);
+}

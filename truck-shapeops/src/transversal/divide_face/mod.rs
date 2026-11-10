@@ -68,9 +68,21 @@ where
         }
         Some(())
     })?;
+    // A hole belongs to the innermost outer loop around it: with nested
+    // loops (a ring-shaped tool crossing the face), the first one found
+    // can be an outer loop around another one, which then gets no hole.
     negative_wires.into_iter().try_for_each(|chunk| {
         let pt = chunk.poly.front();
-        let op = pre_faces.iter_mut().find(|face| face[0].poly.include(pt))?;
+        let hole_area = chunk.poly.area();
+        let op = pre_faces
+            .iter_mut()
+            .filter(|face| {
+                // Not its own twin (the same loop the other way round,
+                // which "includes" the hole's points on its boundary).
+                let area = face[0].poly.area();
+                area > -hole_area * (1.0 + 1e-6) && face[0].poly.include(pt)
+            })
+            .min_by(|a, b| a[0].poly.area().total_cmp(&b[0].poly.area()))?;
         op.push(chunk);
         Some(())
     })?;
