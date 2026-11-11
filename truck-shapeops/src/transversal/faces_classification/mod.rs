@@ -42,10 +42,16 @@ impl<P, C, S> FacesClassification<P, C, S> {
         let components = unknown.connected_components();
         for comp in components {
             let boundary = comp.extract_boundaries();
+            // A closed component (a whole shell, e.g. a void inside the other
+            // solid) has no boundary to classify it by: leave it unknown, to be
+            // classified by a ray like the rest.
+            let Some(first) = boundary.first().and_then(|wire| wire.front()) else {
+                continue;
+            };
             if and_boundary
                 .iter()
                 .flatten()
-                .any(|edge| edge.id() == boundary[0][0].id())
+                .any(|edge| edge.id() == first.id())
             {
                 comp.iter().for_each(|face| {
                     *self.status.get_mut(&face.id()).unwrap() = ShapesOpStatus::And;
@@ -53,7 +59,7 @@ impl<P, C, S> FacesClassification<P, C, S> {
             } else if or_boundary
                 .iter()
                 .flatten()
-                .any(|edge| edge.id() == boundary[0][0].id())
+                .any(|edge| edge.id() == first.id())
             {
                 comp.iter().for_each(|face| {
                     *self.status.get_mut(&face.id()).unwrap() = ShapesOpStatus::Or;
