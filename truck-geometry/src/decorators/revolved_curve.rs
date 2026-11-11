@@ -50,9 +50,16 @@ impl Revolution {
         let (p, q) = (p - self.origin, q - self.origin);
         let hp = (p - p.dot(self.axis) * self.axis).normalize();
         let hq = (q - q.dot(self.axis) * self.axis).normalize();
-        let t = f64::acos(f64::clamp(hp.dot(hq), -1.0, 1.0));
+        // atan2, not acos: acos of a dot product a rounding error below 1 is
+        // already 1.5e-8, which at a radius of 100 misses the point by more
+        // than TOLERANCE (points on the profile itself weren't found).
+        let t = f64::atan2(hp.cross(hq).magnitude(), hp.dot(hq));
         match hp.cross(hq).dot(self.axis) < 0.0 {
             false => t,
+            // A point at the start angle can come out a rounding error
+            // below it: that's 0, not just short of 2π (the far side of the
+            // seam, where a face starting there doesn't reach).
+            true if t < TOLERANCE => 0.0,
             true => 2.0 * PI - t,
         }
     }

@@ -4,6 +4,7 @@ The version is of the bottom crate `truck-rendimpl`.
 
 ## Unreleased
 
+- `RevolutedCurve::search_parameter` finds points on the profile itself (angle 0): the angle came from `acos` of a dot product, which a rounding error below 1 turns into 1.5e-8 rad, too far off at a large radius. Faces of revolves starting there didn't triangulate, leaving holes in the mesh. Now `atan2`, and an angle a rounding error short of a whole turn is 0.
 - `IntersectionCurve::parameter_division` stops at 4096 points: where its tolerance is never met (a sliver thinner than it, or a search that doesn't converge) it divided down to 2^100 pieces, and shape operations never finished.
 - Shape operations classify a closed component of faces (a whole shell with no boundary to the rest, e.g. a void inside the other solid) by a ray like other unknown faces, instead of panicking on its empty boundary.
 - Intersection curves with a leader of fewer than two points are refused (`None`) instead of panicking.
