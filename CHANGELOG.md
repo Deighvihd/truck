@@ -4,6 +4,10 @@ The version is of the bottom crate `truck-rendimpl`.
 
 ## Unreleased
 
+- `IntersectionCurve::parameter_division` stops at 4096 points: where its tolerance is never met (a sliver thinner than it, or a search that doesn't converge) it divided down to 2^100 pieces, and shape operations never finished.
+- Shape operations classify a closed component of faces (a whole shell with no boundary to the rest, e.g. a void inside the other solid) by a ray like other unknown faces, instead of panicking on its empty boundary.
+- Intersection curves with a leader of fewer than two points are refused (`None`) instead of panicking.
+- Fillet returns `None` instead of panicking when a contact curve doesn't meet the next edge, or a tangent frame is singular.
 - Shape operations with a tool that has a hole through it (a ring or a frame crossing a face) work: when splitting a face, a hole loop goes into the innermost outer loop around it, not the first one found or its own twin.
 - Shape operations fit intersection curves by arc length along their polyline leader. Fitting at uniform leader parameters overshot between unevenly spaced vertices, so curves ran backwards in places and the faces they bound tessellated folded over.
 - Shape operations return `None` instead of panicking (debug) or building invalid faces (release) when splitting a face gives invalid wires.
