@@ -104,3 +104,25 @@ fn parameter_division_with_hints() {
         assert!(mid.distance(q[0].midpoint(q[1])) < 2.0 * tol);
     }
 }
+
+/// With a tolerance that can never be met, the division still stops: depth
+/// alone allowed 2^100 points.
+#[test]
+fn parameter_division_is_bounded() {
+    let sphere0 = Sphere::new(Point3::new(0.0, 0.0, 1.0), f64::sqrt(2.0));
+    let sphere1 = Sphere::new(Point3::new(0.0, 0.0, -1.0), f64::sqrt(2.0));
+    let bsp = BSplineCurve::new(
+        KnotVec::bezier_knot(2),
+        vec![
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 2.0, 0.0),
+            Point3::new(-1.0, 0.0, 0.0),
+        ],
+    );
+    let curve = IntersectionCurve::new(sphere0, sphere1, bsp);
+    let (params, points) = curve.parameter_division(curve.range_tuple(), 0.0);
+    assert_eq!(params.len(), points.len());
+    // The cap, plus one point per level still open when it was reached.
+    assert!(params.len() <= (1 << 12) + 101, "{}", params.len());
+    assert!(params.len() > 2);
+}

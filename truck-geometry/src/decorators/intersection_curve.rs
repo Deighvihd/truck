@@ -339,6 +339,9 @@ where
 
 type Triple = (Point3, Point2, Point2);
 const TRIALS: usize = 100;
+/// The most points [`ParameterDivision1D::parameter_division`] makes of one
+/// intersection curve.
+const MAX_DIVISION: usize = 1 << 12;
 
 impl<C, S0, S1> IntersectionCurve<C, S0, S1>
 where
@@ -378,7 +381,11 @@ where
             None => true,
         };
         let mid_param = (range.0 + range.1) / 2.0;
-        let mid_value = match close || trials == 0 {
+        // Depth alone doesn't bound the work: where the tolerance is never met
+        // (a sliver far thinner than the tolerance, or a search that doesn't
+        // converge) the tree is 2^TRIALS leaves. Stop at MAX_DIVISION points.
+        let full = division.0.len() >= MAX_DIVISION;
+        let mid_value = match close || trials == 0 || full {
             true => None,
             false => self.hinted_triple(mid_param, (&ends.0, &ends.1), 0.5),
         };
