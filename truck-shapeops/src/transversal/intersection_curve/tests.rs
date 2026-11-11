@@ -102,3 +102,12 @@ fn collide_parabola() {
         assert_near!(pt.distance(Point3::origin()) * 0.5, f64::sqrt(0.5) * 0.5);
     }
 }
+
+/// A leader of one point is no curve: refused, not a panic.
+#[test]
+fn a_one_point_leader_is_refused() {
+    let sphere0 = Sphere::new(Point3::new(0.0, 0.0, 1.0), f64::sqrt(2.0));
+    let sphere1 = Sphere::new(Point3::new(0.0, 0.0, -1.0), f64::sqrt(2.0));
+    let polyline = PolylineCurve(vec![Point3::new(1.0, 0.0, 0.0)]);
+    assert!(IntersectionCurveWithParameters::try_new(sphere0, sphere1, polyline).is_none());
+}
