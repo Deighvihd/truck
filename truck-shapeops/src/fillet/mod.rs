@@ -68,6 +68,12 @@ where
         let p = curve.subs(t0).midpoint(front_curve.subs(t1));
         let v0 = Vertex::new(p);
         if !curve_hint.near(&t0) {
+            // Met at (or past) the curve's other end: no curve would be
+            // left to meet the back edge (evaluating it panicked).
+            let (_, end) = curve.range_tuple();
+            if t0.near(&end) || t0 > end {
+                return None;
+            }
             curve = curve.cut(t0);
         }
         let der = front_curve.der(t1);
@@ -90,6 +96,11 @@ where
         let p = curve.subs(t0).midpoint(back_curve.subs(t1));
         let v1 = Vertex::new(p);
         if !t0.near(&curve_hint) {
+            // Met at (or before) the curve's start: no curve left.
+            let (start, _) = curve.range_tuple();
+            if t0.near(&start) || t0 < start {
+                return None;
+            }
             curve.cut(t0);
         }
         let der = back_curve.der(t1);
