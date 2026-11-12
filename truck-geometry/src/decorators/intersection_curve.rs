@@ -331,9 +331,13 @@ where
         let (Some(start), Some(end)) = ends else {
             return algo::curve::parameter_division(self, range, tol);
         };
-        let mut division = (vec![range.0], vec![start.0]);
+        let mut division = Division {
+            params: vec![range.0],
+            points: vec![start.0],
+            searches: MAX_FULL_SEARCHES,
+        };
         self.sub_parameter_division(range, (start, end), tol, TRIALS, &mut division);
-        division
+        (division.params, division.points)
     }
 }
 
@@ -342,6 +346,18 @@ const TRIALS: usize = 100;
 /// The most points [`ParameterDivision1D::parameter_division`] makes of one
 /// intersection curve.
 const MAX_DIVISION: usize = 1 << 12;
+/// The most full (unhinted) searches one division makes. A curve that keeps
+/// needing them doesn't follow its surfaces (a hinted search from close
+/// neighbours fails), so more points only cost time: each search is a grid
+/// over both surfaces.
+const MAX_FULL_SEARCHES: usize = 256;
+
+/// A division under way: its points so far, and the full searches left.
+struct Division {
+    params: Vec<f64>,
+    points: Vec<Point3>,
+    searches: usize,
+}
 
 impl<C, S0, S1> IntersectionCurve<C, S0, S1>
 where
@@ -351,15 +367,25 @@ where
 {
     /// The point at `t`, starting from parameters interpolated between two
     /// known points `ends` at ratio `s`; falls back to a full search when the
-    /// hinted solve fails or lands implausibly far from the leader.
-    fn hinted_triple(&self, t: f64, ends: (&Triple, &Triple), s: f64) -> Option<Triple> {
+    /// hinted solve fails or lands implausibly far from the leader, while
+    /// `searches` lasts.
+    fn hinted_triple(
+        &self,
+        t: f64,
+        ends: (&Triple, &Triple),
+        s: f64,
+        searches: &mut usize,
+    ) -> Option<Triple> {
         let (a, b) = ends;
         let hint0 = a.1 + (b.1 - a.1) * s;
         let hint1 = a.2 + (b.2 - a.2) * s;
         let bound = a.0.distance(b.0) + self.leader.subs(t).distance(a.0.midpoint(b.0));
         self.search_triple_with_hints(t, hint0.into(), hint1.into(), TRIALS)
             .filter(|(p, _, _)| p.distance(a.0.midpoint(b.0)) <= bound.max(TOLERANCE))
-            .or_else(|| self.search_triple(t, TRIALS))
+            .or_else(|| {
+                *searches = searches.checked_sub(1)?;
+                self.search_triple(t, TRIALS)
+            })
     }
 
     /// Mirrors `algo::curve::sub_parameter_division`, appending the points
@@ -370,13 +396,13 @@ where
         ends: (Triple, Triple),
         tol: f64,
         trials: usize,
-        division: &mut (Vec<f64>, Vec<Point3>),
+        division: &mut Division,
     ) {
         let gen = ends.0 .0.midpoint(ends.1 .0);
         let p = 0.5 + (0.2 * HashGen::hash1(gen) - 0.1);
         let t = range.0 * (1.0 - p) + range.1 * p;
         let mid = ends.0 .0 + (ends.1 .0 - ends.0 .0) * p;
-        let close = match self.hinted_triple(t, (&ends.0, &ends.1), p) {
+        let close = match self.hinted_triple(t, (&ends.0, &ends.1), p, &mut division.searches) {
             Some((point, _, _)) => point.distance2(mid) < tol * tol,
             None => true,
         };
@@ -384,15 +410,18 @@ where
         // Depth alone doesn't bound the work: where the tolerance is never met
         // (a sliver far thinner than the tolerance, or a search that doesn't
         // converge) the tree is 2^TRIALS leaves. Stop at MAX_DIVISION points.
-        let full = division.0.len() >= MAX_DIVISION;
+        let full = division.params.len() >= MAX_DIVISION;
         let mid_value = match close || trials == 0 || full {
             true => None,
-            false => self.hinted_triple(mid_param, (&ends.0, &ends.1), 0.5),
+            false => {
+                let ends = (&ends.0, &ends.1);
+                self.hinted_triple(mid_param, ends, 0.5, &mut division.searches)
+            }
         };
         match mid_value {
             None => {
-                division.0.push(range.1);
-                division.1.push(ends.1 .0);
+                division.params.push(range.1);
+                division.points.push(ends.1 .0);
             }
             Some(mid_value) => {
                 let (start, end) = ends;
@@ -565,5 +594,55 @@ mod double_projection_tests {
     #[property_test]
     fn sphere_case(#[strategy = 0f64..=(2.0 * PI)] t: f64, #[strategy = 0.5f64..=1.5f64] r: f64) {
         exec_sphere_case(t, r)?;
+    }
+}
+
+#[cfg(test)]
+mod division_tests {
+    use super::*;
+
+    /// Spheres meeting in the unit circle at z = 0, and a leader near its
+    /// half at y > 0.
+    fn curve() -> IntersectionCurve<BSplineCurve<Point3>, Sphere, Sphere> {
+        let sphere0 = Sphere::new(Point3::new(0.0, 0.0, 1.0), f64::sqrt(2.0));
+        let sphere1 = Sphere::new(Point3::new(0.0, 0.0, -1.0), f64::sqrt(2.0));
+        let leader = BSplineCurve::new(
+            KnotVec::bezier_knot(2),
+            vec![
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 2.0, 0.0),
+                Point3::new(-1.0, 0.0, 0.0),
+            ],
+        );
+        IntersectionCurve::new(sphere0, sphere1, leader)
+    }
+
+    /// A full search runs only while the budget lasts: hints that lead the
+    /// solve astray (to the far side of the circle) give no point once it's
+    /// spent, instead of another search over both surfaces.
+    #[test]
+    fn full_searches_spend_the_budget() {
+        let curve = curve();
+        let a = curve.search_triple(0.4, 100).unwrap();
+        let b = curve.search_triple(0.6, 100).unwrap();
+        // The parameters of the opposite point, (0, -1, 0).
+        let far = Point3::new(0.0, -1.0, 0.0);
+        let uv0 = curve
+            .surface0()
+            .search_nearest_parameter(far, None, 100)
+            .unwrap();
+        let uv1 = curve
+            .surface1()
+            .search_nearest_parameter(far, None, 100)
+            .unwrap();
+        let astray = |p: Triple| (p.0, Point2::from(uv0), Point2::from(uv1));
+        let ends = (&astray(a), &astray(b));
+
+        let mut searches = 1;
+        let (p, _, _) = curve.hinted_triple(0.5, ends, 0.5, &mut searches).unwrap();
+        assert_near!(p, Point3::new(0.0, 1.0, 0.0));
+        assert_eq!(searches, 0);
+        assert!(curve.hinted_triple(0.5, ends, 0.5, &mut searches).is_none());
+        assert_eq!(searches, 0);
     }
 }
