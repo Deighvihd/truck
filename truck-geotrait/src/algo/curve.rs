@@ -78,14 +78,22 @@ where
     C: ParametricCurve,
     C::Point: EuclideanSpace<Scalar = f64> + MetricSpace<Metric = f64> + HashGen<f64>, {
     nonpositive_tolerance!(tol);
+    let mut budget = MAX_DIVISION;
     sub_parameter_division(
         curve,
         range,
         (curve.subs(range.0), curve.subs(range.1)),
         tol,
         100,
+        &mut budget,
     )
 }
+
+/// The most subdivisions [`parameter_division`] makes of one curve. Depth
+/// alone doesn't bound the work: where the tolerance is never met (a curve
+/// whose evaluation is noisy, or a sliver thinner than the tolerance) the
+/// tree has 2^depth leaves.
+const MAX_DIVISION: usize = 1 << 12;
 
 fn sub_parameter_division<C>(
     curve: &C,
@@ -93,6 +101,7 @@ fn sub_parameter_division<C>(
     ends: (C::Point, C::Point),
     tol: f64,
     trials: usize,
+    budget: &mut usize,
 ) -> (Vec<f64>, Vec<C::Point>)
 where
     C: ParametricCurve,
@@ -103,9 +112,10 @@ where
     let t = range.0 * (1.0 - p) + range.1 * p;
     let mid = ends.0 + (ends.1 - ends.0) * p;
     let dist2 = curve.subs(t).distance2(mid);
-    if dist2 < tol * tol || trials == 0 {
+    if dist2 < tol * tol || trials == 0 || *budget == 0 {
         (vec![range.0, range.1], vec![ends.0, ends.1])
     } else {
+        *budget -= 1;
         let mid_param = (range.0 + range.1) / 2.0;
         let mid_value = curve.subs(mid_param);
         let (mut params, mut pts) = sub_parameter_division(
@@ -114,6 +124,7 @@ where
             (ends.0, mid_value),
             tol,
             trials - 1,
+            budget,
         );
         let _ = (params.pop(), pts.pop());
         let (new_params, new_pts) = sub_parameter_division(
@@ -122,6 +133,7 @@ where
             (mid_value, ends.1),
             tol,
             trials - 1,
+            budget,
         );
         params.extend(new_params);
         pts.extend(new_pts);
@@ -237,4 +249,45 @@ where
     C1: ParametricCurve<Point = P, Vector = P::Diff>,
 {
     surface::search_parameter(&SubSurface { curve0, curve1 }, P::origin(), hint, trials)
+}
+
+#[cfg(test)]
+mod division_budget {
+    use super::*;
+
+    /// A curve that never settles within any tolerance: its points jump
+    /// about (like a search that doesn't converge).
+    #[derive(Clone)]
+    struct Noisy;
+    impl ParametricCurve for Noisy {
+        type Point = Point2;
+        type Vector = Vector2;
+        fn der_n(&self, n: usize, t: f64) -> Vector2 {
+            match n {
+                0 => self.subs(t).to_vec(),
+                1 => Vector2::new(1.0, 0.0),
+                _ => Vector2::zero(),
+            }
+        }
+        fn subs(&self, t: f64) -> Point2 {
+            let h = (t * 1.0e6).sin() * 43758.5453;
+            Point2::new(t, h - h.floor())
+        }
+        fn der(&self, _: f64) -> Vector2 { Vector2::new(1.0, 0.0) }
+        fn der2(&self, _: f64) -> Vector2 { Vector2::zero() }
+        fn parameter_range(&self) -> ParameterRange {
+            (
+                std::ops::Bound::Included(0.0),
+                std::ops::Bound::Included(1.0),
+            )
+        }
+    }
+
+    #[test]
+    fn a_curve_that_never_settles_is_divided_in_bounded_time() {
+        let (params, points) = parameter_division(&Noisy, (0.0, 1.0), 1.0e-6);
+        assert_eq!(params.len(), points.len());
+        // Each subdivision adds a point between the two ends.
+        assert!(params.len() <= MAX_DIVISION + 2, "{}", params.len());
+    }
 }
