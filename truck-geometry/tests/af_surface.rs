@@ -47,3 +47,20 @@ fn approx_fillet_between_two_spheres() {
         instance.elapsed().as_millis()
     );
 }
+
+// A parameter range running backwards made an unsorted knot vector, and
+// the approximation panicked (`NotSortedVector`) inside a fillet. It has
+// no approximation instead.
+#[test]
+fn approx_fillet_with_a_backward_range_is_none() {
+    let sphere0 = Sphere::new(Point3::new(0.0, 0.0, 10.0), 20.0);
+    let sphere1 = Sphere::new(Point3::new(0.0, 0.0, -10.0), 20.0);
+    let edge_circle = Processor::with_transform(
+        UnitCircle::<Point3>::new(),
+        Matrix4::from_scale(10.0 * f64::sqrt(3.0)),
+    );
+    let fillet = RbfSurface::new(edge_circle, sphere0, sphere1, 5.0);
+    let approx =
+        ApproxFilletSurface::approx_rolling_ball_fillet(&fillet, (PI * 1.9, PI * 0.1), 0.001);
+    assert!(approx.is_none());
+}
