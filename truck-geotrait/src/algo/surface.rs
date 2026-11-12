@@ -269,9 +269,29 @@ fn sub_parameter_division<S>(
                     + pt11.to_vec() * p * q,
             );
             if p0.distance2(pt) > tol * tol {
+                // A surface straight one way (a cylinder, a cone, an
+                // extrusion) is split only across: splitting by the cell's
+                // proportions cut a long cylinder into square cells along its
+                // straight length (tens of thousands of triangles where a few
+                // hundred do). Elsewhere, by its proportions, as before.
+                let um = (u[0] + u[1]) / 2.0;
+                let vm = (v[0] + v[1]) / 2.0;
+                let bend_u = f64::max(
+                    surface.subs(um, v[0]).distance(pt00.midpoint(pt10)),
+                    surface.subs(um, v[1]).distance(pt01.midpoint(pt11)),
+                );
+                let bend_v = f64::max(
+                    surface.subs(u[0], vm).distance(pt00.midpoint(pt01)),
+                    surface.subs(u[1], vm).distance(pt10.midpoint(pt11)),
+                );
+                let straight = tol * 1.0e-3;
                 let delu = pt00.midpoint(pt01).distance(p0) + pt10.midpoint(pt11).distance(p0);
                 let delv = pt00.midpoint(pt10).distance(p0) + pt01.midpoint(pt11).distance(p0);
-                if delu > delv * 2.0 {
+                if bend_v < straight && bend_u >= straight {
+                    *ub = true;
+                } else if bend_u < straight && bend_v >= straight {
+                    *vb = true;
+                } else if delu > delv * 2.0 {
                     *ub = true;
                 } else if delv > delu * 2.0 {
                     *vb = true;
