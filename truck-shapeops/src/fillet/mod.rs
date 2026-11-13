@@ -132,7 +132,7 @@ where
             boundary
         })
         .collect::<Vec<_>>();
-    let mut new_face = Face::new(new_boundaries, face.surface());
+    let mut new_face = Face::try_new(new_boundaries, face.surface()).ok()?;
     if !face.orientation() {
         new_face.invert();
     }
@@ -279,7 +279,7 @@ where
     )?;
     let fillet = {
         let fillet_boundary = [fillet_edge0.inverse(), edge0, fillet_edge1.inverse(), edge1];
-        Face::new(vec![fillet_boundary.into()], surface)
+        Face::try_new(vec![fillet_boundary.into()], surface).ok()?
     };
 
     Some(SimpleFillet {
@@ -344,11 +344,13 @@ where
             new_boundary
         })
         .collect();
+    // Checked before the shared edge's curve changes: boundaries that
+    // don't close make no face (not a panic).
+    let mut new_face = Face::try_new(new_boundaries, side.surface()).ok()?;
     let side_surface = side.oriented_surface();
     let fillet_surface = fillet_surface.clone();
     let new_curve = IntersectionCurve::new(side_surface, fillet_surface, fillet_edge.curve());
     fillet_edge.set_curve(new_curve.to_same_geometry());
-    let mut new_face = Face::new(new_boundaries, side.surface());
     if !side.orientation() {
         new_face.invert();
     }
@@ -571,7 +573,7 @@ where
         edge2.invert();
         edge3.invert();
         let boundary = wire![edge0, edge1, edge2, edge3];
-        Some(Face::new(vec![boundary], surface.to_same_geometry()))
+        Face::try_new(vec![boundary], surface.to_same_geometry()).ok()
     };
     wire.edge_iter().zip(fctes).map(closure).collect()
 }
