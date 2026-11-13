@@ -68,7 +68,7 @@ fn altshell_to_shell<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
                 // A curve of no length can't be approximated (its knot
                 // vector would be scaled by 0).
                 let (t0, t1) = hinted.range_tuple();
-                if !(t1 - t0 > 0.0) {
+                if t1 - t0 <= 0.0 || (t1 - t0).is_nan() {
                     return None;
                 }
                 let bsp =
