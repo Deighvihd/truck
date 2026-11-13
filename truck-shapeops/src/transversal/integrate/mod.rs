@@ -99,41 +99,60 @@ fn process_one_pair_of_shells<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
     let mut cls1 = divide_face::divide_faces(&altshell1, &loops_store1, tol)?;
     cls1.integrate_by_component();
     let [mut and0, mut or0, unknown0] = cls0.and_or_unknown();
-    unknown0.into_iter().try_for_each(|face| {
-        let pt = face.boundaries()[0].vertex_iter().next()?.point();
-        let dir = hash::take_one_unit(pt);
-        let count = poly_shell1.iter().try_fold(0, |count, face| {
-            let poly = face.surface()?;
-            Some(count + poly.signed_crossing_faces(pt, dir))
-        })?;
-        if count >= 1 {
-            and0.push(face);
-        } else {
-            or0.push(face);
-        }
-        Some(())
-    })?;
     let [mut and1, mut or1, unknown1] = cls1.and_or_unknown();
-    unknown1.into_iter().try_for_each(|face| {
-        let pt = face.boundaries()[0].vertex_iter().next()?.point();
-        let dir = hash::take_one_unit(pt);
-        let count = poly_shell0.iter().try_fold(0, |count, face| {
-            let poly = face.surface()?;
-            Some(count + poly.signed_crossing_faces(pt, dir))
-        })?;
-        if count >= 1 {
-            and1.push(face);
-        } else {
-            or1.push(face);
-        }
-        Some(())
-    })?;
+    classify_unknown(unknown0, &poly_shell1, &mut and0, &mut or0)?;
+    classify_unknown(unknown1, &poly_shell0, &mut and1, &mut or1)?;
     and0.append(&mut and1);
     or0.append(&mut or1);
     Some([
         altshell_to_shell(&and0, tol)?,
         altshell_to_shell(&or0, tol)?,
     ])
+}
+
+/// Sorts the faces no intersection loop touched (`unknown`) into those
+/// inside the other shell (`and`) and those outside (`or`), by casting a
+/// ray from a vertex of each face through the other shell's mesh. A ray
+/// grazing the mesh (through an edge or a vertex of its triangles) can
+/// miscount, so the faces vote: a connected piece of such faces lies all
+/// on one side, the side three quarters of its faces' rays find (`None` if
+/// neither side gets that many).
+fn classify_unknown<C, S>(
+    unknown: AltCurveShell<C, S>,
+    other: &Shell<Point3, PolylineCurve<Point3>, Option<PolygonMesh>>,
+    and: &mut AltCurveShell<C, S>,
+    or: &mut AltCurveShell<C, S>,
+) -> Option<()>
+where
+    C: ShapeOpsCurve<S>,
+    S: ShapeOpsSurface,
+{
+    for component in unknown.connected_components() {
+        let (mut inside, mut outside) = (0_usize, 0_usize);
+        for face in component.face_iter() {
+            let pt = face.boundaries()[0].vertex_iter().next()?.point();
+            let dir = hash::take_one_unit(pt);
+            let count = other.iter().try_fold(0, |count, face| {
+                let poly = face.surface()?;
+                Some(count + poly.signed_crossing_faces(pt, dir))
+            })?;
+            match count >= 1 {
+                true => inside += 1,
+                false => outside += 1,
+            }
+        }
+        // Three quarters of the rays must agree: rays that disagree more
+        // than a stray graze does mean the meshes can't tell.
+        let total = inside + outside;
+        if 4 * inside >= 3 * total {
+            and.extend(component);
+        } else if 4 * outside >= 3 * total {
+            or.extend(component);
+        } else {
+            return None;
+        }
+    }
+    Some(())
 }
 
 /// AND operation between two solids.
