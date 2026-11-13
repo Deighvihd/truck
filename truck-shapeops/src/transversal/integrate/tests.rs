@@ -26,8 +26,8 @@ fn punched_cube() {
     obj::write(&poly, file).unwrap();
 }
 
-// A tool larger than the whole solid: the operation must fail with `None`,
-// not panic building an unclosed solid.
+// A tool larger than the whole solid: nothing is left (no result, or an
+// empty solid), not a panic building an unclosed solid.
 #[test]
 fn tool_engulfs_solid() {
     let v = builder::vertex(Point3::origin());
@@ -46,7 +46,8 @@ fn tool_engulfs_solid() {
     let f = builder::try_attach_plane(&[w]).unwrap();
     let mut cylinder = builder::tsweep(&f, Vector3::unit_z() * 2.0);
     cylinder.not();
-    assert!(crate::and(&cube, &cylinder, 0.05).is_none());
+    let result = crate::and(&cube, &cylinder, 0.05);
+    assert!(result.is_none_or(|s| s.boundaries().is_empty()));
 }
 
 // A tool engulfing the solid with a face on the solid's face: splitting the
@@ -190,4 +191,22 @@ fn notched_wall_meshes_on_its_surface() {
     let volume = |s: &Solid| s.triangulation(0.01).to_polygon().volume();
     let (before, after) = (volume(&cylinder), volume(&joined));
     assert!(after > before, "{before} → {after}");
+}
+
+// A cut whose tool doesn't touch the solid leaves it whole. The faces no
+// intersection touches are sorted by rays through the tool's mesh, whose
+// faces run backwards (the tool is inverted, `not`); their meshes didn't,
+// and a ray from outside the tool counted as outside its complement, so
+// the cut removed everything.
+#[test]
+fn cut_by_a_tool_apart_leaves_the_solid() {
+    let v = builder::vertex(Point3::origin());
+    let e = builder::tsweep(&v, Vector3::unit_x());
+    let f = builder::tsweep(&e, Vector3::unit_y());
+    let cube: Solid = builder::tsweep(&f, Vector3::unit_z());
+    let mut tool = builder::translated(&cube, Vector3::new(2.0, 0.0, 0.0));
+    tool.not();
+    let result = crate::and(&cube, &tool, 0.05).unwrap();
+    assert_eq!(result.boundaries().len(), 1);
+    assert_eq!(result.boundaries()[0].len(), 6);
 }

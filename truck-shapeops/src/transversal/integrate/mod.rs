@@ -133,16 +133,43 @@ where
     C: ShapeOpsCurve<S>,
     S: ShapeOpsSurface,
 {
+    // Each face's mesh as the face runs (the meshes are made for the
+    // surfaces; an inverted face's runs the other way).
+    let meshes: Vec<PolygonMesh> = other
+        .face_iter()
+        .map(|face| {
+            let mut poly = face.surface()?;
+            if !face.orientation() {
+                poly.invert();
+            }
+            Some(poly)
+        })
+        .collect::<Option<_>>()?;
+    // A ray from outside a closed shell crosses it as often each way (a
+    // count of 0), from inside once more outward (1). An inverted shell
+    // (a cut's tool: everything but a solid) bounds the region outside it,
+    // so there the count is 0 inside the region, -1 outside: shift by one.
+    let volume: f64 = meshes
+        .iter()
+        .flat_map(|poly| {
+            let positions = poly.positions();
+            poly.faces().triangle_iter().map(move |t| {
+                let [a, b, c] = [t[0].pos, t[1].pos, t[2].pos].map(|i| positions[i].to_vec());
+                a.dot(b.cross(c))
+            })
+        })
+        .sum();
+    let shift = if volume < 0.0 { 1 } else { 0 };
     for component in unknown.connected_components() {
         let (mut inside, mut outside) = (0_usize, 0_usize);
         for face in component.face_iter() {
             let pt = face.boundaries()[0].vertex_iter().next()?.point();
             let dir = hash::take_one_unit(pt);
-            let count = other.iter().try_fold(0, |count, face| {
-                let poly = face.surface()?;
-                Some(count + poly.signed_crossing_faces(pt, dir))
-            })?;
-            match count >= 1 {
+            let count: isize = meshes
+                .iter()
+                .map(|poly| poly.signed_crossing_faces(pt, dir))
+                .sum();
+            match count + shift >= 1 {
                 true => inside += 1,
                 false => outside += 1,
             }
