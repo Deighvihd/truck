@@ -126,3 +126,36 @@ fn parameter_division_is_bounded() {
     assert!(params.len() <= (1 << 12) + 101, "{}", params.len());
     assert!(params.len() > 2);
 }
+
+/// Surfaces that don't meet (parallel planes): no point of the curve can
+/// be found, so its leader is divided instead, as a polyline of the
+/// leader's own points (not one unhinted search over both surfaces per
+/// point, which took minutes on fillet surfaces).
+#[test]
+fn parameter_division_of_surfaces_that_dont_meet_follows_the_leader() {
+    let plane0 = Plane::new(
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+    );
+    let plane1 = Plane::new(
+        Point3::new(0.0, 0.0, 1.0),
+        Point3::new(1.0, 0.0, 1.0),
+        Point3::new(0.0, 1.0, 1.0),
+    );
+    let leader = BSplineCurve::new(
+        KnotVec::bezier_knot(2),
+        vec![
+            Point3::new(0.0, 0.0, 0.5),
+            Point3::new(1.0, 2.0, 0.5),
+            Point3::new(2.0, 0.0, 0.5),
+        ],
+    );
+    let curve = IntersectionCurve::new(plane0, plane1, leader.clone());
+    let (params, points) = curve.parameter_division(curve.range_tuple(), 0.01);
+    assert_eq!(params.len(), points.len());
+    assert!(params.len() > 2);
+    for (t, p) in params.iter().zip(&points) {
+        assert_near!(*p, leader.subs(*t));
+    }
+}

@@ -328,8 +328,12 @@ where
             self.search_triple(range.0, TRIALS),
             self.search_triple(range.1, TRIALS),
         );
+        // Ends not on both surfaces: the leader (which approximates the
+        // curve) is divided instead. Dividing the curve itself would search
+        // over both surfaces, unhinted, for every point (seeds 19822,
+        // 20803: rebuilds that never finished).
         let (Some(start), Some(end)) = ends else {
-            return algo::curve::parameter_division(self, range, tol);
+            return algo::curve::parameter_division(&self.leader, range, tol);
         };
         let mut division = Division {
             params: vec![range.0],
