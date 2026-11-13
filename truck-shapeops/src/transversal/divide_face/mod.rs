@@ -43,9 +43,32 @@ where
 }
 
 #[derive(Clone, Debug)]
-struct WireChunk<'a, C> {
+struct WireChunk<C> {
     poly: PolylineCurve<Point2>,
-    wire: &'a BoundaryWire<Point3, C>,
+    wire: BoundaryWire<Point3, C>,
+}
+
+/// `wire` (closed) as simple loops: where it comes back to a vertex it
+/// passed (an intersection loop touching the face's boundary at a point),
+/// the part in between is a loop of its own. A wire through a vertex twice
+/// can't bound a face.
+fn simple_loops<P, C>(wire: &Wire<P, C>) -> Vec<Wire<P, C>> {
+    let mut loops = Vec::new();
+    let mut path: Vec<Edge<P, C>> = Vec::new();
+    for edge in wire.edge_iter() {
+        path.push(edge.clone());
+        let back = edge.back().id();
+        if let Some(k) = path.iter().position(|e| e.front().id() == back) {
+            if k > 0 || path.len() < wire.len() {
+                let looped: Wire<P, C> = path.drain(k..).collect();
+                loops.push(looped);
+            }
+        }
+    }
+    if !path.is_empty() {
+        loops.push(path.into_iter().collect());
+    }
+    loops
 }
 
 type FaceWithShapesOpStatus<C, S> = (Face<Point3, C, S>, ShapesOpStatus);
@@ -60,8 +83,13 @@ where
 {
     let (mut pre_faces, mut negative_wires) = (Vec::new(), Vec::new());
     let mut map = HashMap::default();
-    loops.iter().try_for_each(|wire| {
-        let poly = create_parameter_boundary(face, wire, &mut map, tol)?;
+    let wires = loops.iter().flat_map(|wire| {
+        simple_loops(wire)
+            .into_iter()
+            .map(|w| BoundaryWire::new(w, wire.status()))
+    });
+    wires.into_iter().try_for_each(|wire| {
+        let poly = create_parameter_boundary(face, &wire, &mut map, tol)?;
         match poly.area() > 0.0 {
             true => pre_faces.push(vec![WireChunk { poly, wire }]),
             false => negative_wires.push(WireChunk { poly, wire }),
@@ -71,16 +99,24 @@ where
     // A hole belongs to the innermost outer loop around it: with nested
     // loops (a ring-shaped tool crossing the face), the first one found
     // can be an outer loop around another one, which then gets no hole.
+    // Around it: around most of its points (one can lie on the outer
+    // loop, where the inclusion test can go either way). A hole of no area
+    // (a sliver between coincident edges) holds nothing.
     negative_wires.into_iter().try_for_each(|chunk| {
-        let pt = chunk.poly.front();
         let hole_area = chunk.poly.area();
+        let bdb: BoundingBox<Point2> = chunk.poly.iter().collect();
+        if hole_area.abs() <= 1.0e-9 * bdb.diagonal().magnitude2() {
+            return Some(());
+        }
+        let points: Vec<Point2> = chunk.poly.iter().copied().collect();
         let op = pre_faces
             .iter_mut()
             .filter(|face| {
                 // Not its own twin (the same loop the other way round,
                 // which "includes" the hole's points on its boundary).
                 let area = face[0].poly.area();
-                area > -hole_area * (1.0 + 1e-6) && face[0].poly.include(pt)
+                let inside = points.iter().filter(|p| face[0].poly.include(**p)).count();
+                area > -hole_area * (1.0 + 1e-6) && 2 * inside > points.len()
             })
             .min_by(|a, b| a[0].poly.area().total_cmp(&b[0].poly.area()))?;
         op.push(chunk);

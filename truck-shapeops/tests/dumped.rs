@@ -59,3 +59,18 @@ fn dumped_booleans() {
         );
     }
 }
+
+/// A join whose splitting of a face gave a loop through one vertex twice
+/// (not a face's boundary) and a hole whose first point lay on the loop
+/// around it (so no loop seemed to hold it): no result. Loops are split
+/// where they come back to a vertex, and a hole goes in the loop around
+/// most of its points.
+#[test]
+fn face_splits_through_a_vertex_twice() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/booleans/split-face-loops.json"
+    );
+    let result = run(&std::fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(result.boundaries().len(), 1);
+}

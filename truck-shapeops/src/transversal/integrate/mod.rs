@@ -65,6 +65,12 @@ fn altshell_to_shell<C: ShapeOpsCurve<S>, S: ShapeOpsSurface>(
             Alternative::FirstType(c) => Some(c.clone()),
             Alternative::SecondType(ic) => {
                 let hinted = HintedIntersectionCurve::new(ic, tol)?;
+                // A curve of no length can't be approximated (its knot
+                // vector would be scaled by 0).
+                let (t0, t1) = hinted.range_tuple();
+                if !(t1 - t0 > 0.0) {
+                    return None;
+                }
                 let bsp =
                     BSplineCurve::quadratic_approximation(&hinted, hinted.range_tuple(), tol, 100)?;
                 Some(
