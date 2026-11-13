@@ -179,8 +179,9 @@ where
             PolyBoundaryPiece::try_new(surface, wire_iter, &sp)
         };
         let preboundary: Option<Vec<_>> = boundaries.iter().map(create_boundary).collect();
+        let seams = edges_twice(boundaries.iter().flatten().map(|e| e.index));
         let polygon: Option<PolygonMesh> = preboundary.map(|preboundary| {
-            let boundary = PolyBoundary::new(preboundary, &surface, tol);
+            let boundary = PolyBoundary::new(preboundary, &surface, tol, seams);
             trimming_tessellation(&surface, &boundary, tol)
         });
         CompressedFace {
@@ -215,7 +216,8 @@ fn shell_create_polygon<S: PreMeshableSurface>(
         })
         .collect::<Option<Vec<_>>>();
     let polygon: Option<PolygonMesh> = preboundary.map(|preboundary| {
-        let boundary = PolyBoundary::new(preboundary, &surface, tol);
+        let seams = edges_twice(wires.iter().flat_map(|w| w.edge_iter().map(|e| e.id())));
+        let boundary = PolyBoundary::new(preboundary, &surface, tol, seams);
         trimming_tessellation(surface, &boundary, tol)
     });
     let mut new_face = Face::debug_new(wires, polygon);
@@ -309,6 +311,13 @@ impl PolyBoundaryPiece {
     }
 }
 
+/// Whether each of `edges` (a face's boundary, as ids) occurs twice.
+fn edges_twice<T: Eq + std::hash::Hash>(edges: impl Iterator<Item = T>) -> bool {
+    let mut count = HashMap::<T, usize>::default();
+    edges.for_each(|e| *count.entry(e).or_default() += 1);
+    !count.is_empty() && count.values().all(|&n| n == 2)
+}
+
 fn abs_diff(previous: f64) -> impl Fn(&f64, &f64) -> std::cmp::Ordering {
     let f = move |x: &f64| f64::abs(x - previous);
     move |x: &f64, y: &f64| f(x).partial_cmp(&f(y)).unwrap()
@@ -354,7 +363,14 @@ fn loop_orientation(curve: &[SurfacePoint]) -> bool {
 }
 
 impl PolyBoundary {
-    fn new(pieces: Vec<PolyBoundaryPiece>, surface: &impl PreMeshableSurface, tol: f64) -> Self {
+    /// `seams`: every edge of the boundary is used twice (a seam, there and
+    /// back), so loops of no area may still bound the whole surface.
+    fn new(
+        pieces: Vec<PolyBoundaryPiece>,
+        surface: &impl PreMeshableSurface,
+        tol: f64,
+        seams: bool,
+    ) -> Self {
         let (mut closed, mut open) = (Vec::new(), Vec::new());
         pieces.into_iter().for_each(|PolyBoundaryPiece(mut vec)| {
             match vec[0].uv.distance(vec[vec.len() - 1].uv) < 1.0e-3 {
@@ -445,8 +461,9 @@ impl PolyBoundary {
             _ => {}
         }
         // Only holes: the domain is the whole surface around them. But a
-        // face whose loops are all flat (two edges along the same line, a
-        // sliver a boolean can leave) has no area, not all of it.
+        // face whose loops are all flat, along different edges (two edges
+        // along the same line, a sliver a boolean can leave), has no area,
+        // not all of it.
         let flat = |curve: &Vec<SurfacePoint>| {
             let area = curve
                 .iter()
@@ -456,7 +473,25 @@ impl PolyBoundary {
             let bdb: BoundingBox<Point2> = curve.iter().map(|p| p.uv).collect();
             area <= 1.0e-9 * bdb.diagonal().magnitude2()
         };
-        let degenerate = !closed.is_empty() && closed.iter().all(flat);
+        // A flat loop along a whole side of the parameter range is a seam
+        // of a surface closed that way: the face may be all of it.
+        let range = surface.try_range_tuple();
+        let seam = |curve: &Vec<SurfacePoint>| {
+            let bdb: BoundingBox<Point2> = curve.iter().map(|p| p.uv).collect();
+            let (min, max) = (bdb.min(), bdb.max());
+            let side = |(a, b): (f64, f64), lo: f64, hi: f64| lo.near(&a) && hi.near(&b);
+            let along =
+                |(a, b): (f64, f64), lo: f64, hi: f64| lo.near(&hi) && (lo.near(&a) || lo.near(&b));
+            match range {
+                (Some(u), Some(v)) => {
+                    (side(u, min.x, max.x) && along(v, min.y, max.y))
+                        || (side(v, min.y, max.y) && along(u, min.x, max.x))
+                }
+                _ => false,
+            }
+        };
+        let degenerate =
+            !seams && !closed.is_empty() && closed.iter().all(|curve| flat(curve) && !seam(curve));
         if !degenerate && !closed.iter().any(|curve| loop_orientation(curve)) {
             if let (Some((u0, u1)), Some((v0, v1))) = surface.try_range_tuple() {
                 let p = [

@@ -273,3 +273,22 @@ fn flat_face_meshes_to_nothing() {
     let polygon = meshed[0].surface().unwrap();
     assert_eq!(polygon.faces().len(), 0);
 }
+
+/// A flat loop along a whole side of its surface's parameter range is a
+/// seam of a surface closed that way (a full revolution's band): the face
+/// is the whole range, as before.
+#[test]
+fn flat_loop_along_a_side_is_a_seam() {
+    let plane = Plane::new(
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+    );
+    let v = builder::vertices([Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)]);
+    let wire: Wire = vec![builder::line(&v[0], &v[1]), builder::line(&v[1], &v[0])].into();
+    let face = Face::new(vec![wire], Surface::Plane(plane));
+    let shell: Shell = vec![face].into();
+    let meshed = shell.triangulation(0.01);
+    let polygon = meshed[0].surface().unwrap();
+    assert!(polygon.faces().len() > 0);
+}
