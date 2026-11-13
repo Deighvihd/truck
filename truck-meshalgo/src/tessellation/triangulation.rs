@@ -490,12 +490,14 @@ impl PolyBoundary {
             .unwrap_or(false)
     }
 
-    /// Inserts points and adds constraint into triangulation.
+    /// Inserts points and adds constraint into triangulation. Returns the
+    /// constraint edges made, directed the boundary's way (a constraint is
+    /// split where a vertex lies on it).
     fn insert_to(
         &self,
         triangulation: &mut Cdt,
         boundary_map: &mut HashMap<FixedVertexHandle, Point3>,
-    ) {
+    ) -> Sides {
         let poly2tri: Vec<_> = self
             .0
             .iter()
@@ -511,35 +513,53 @@ impl PolyBoundary {
                 }
             })
             .collect();
-        let mut prev: Option<usize> = None;
-        let mut counter = 0;
-        self.0
-            .iter()
-            .map(Vec::len)
-            .flat_map(|len| {
-                let range = counter..counter + len;
-                counter += len;
-                range.circular_tuple_windows()
-            })
-            .for_each(|(i, j)| {
-                let Some(vj) = poly2tri[j] else { return };
-                if let Some(p) = prev {
-                    let Some(v) = poly2tri[p] else { return };
-                    if triangulation.can_add_constraint(v, vj) {
-                        triangulation.add_constraint(v, vj);
-                        prev = None;
-                    }
-                } else {
-                    let Some(vi) = poly2tri[i] else { return };
-                    if triangulation.can_add_constraint(vi, vj) {
-                        triangulation.add_constraint(vi, vj);
-                    } else {
-                        prev = Some(i);
-                    }
-                }
+        let mut sides = Sides::default();
+        // `along`: a segment of the boundary (not a chord past a vertex
+        // whose segment couldn't be added: which side of it the face lies
+        // isn't known).
+        let mut constrain = |triangulation: &mut Cdt, from, to, along: bool| {
+            if from == to {
+                return true;
+            }
+            if !triangulation.can_add_constraint(from, to) {
+                return false;
+            }
+            // The edges made: none if it was a constraint edge already.
+            let edges = triangulation.try_add_constraint(from, to);
+            if !along {
+                return true;
+            }
+            edges.iter().for_each(|&edge| {
+                let edge = triangulation.directed_edge(edge);
+                sides.insert((edge.from().fix(), edge.to().fix()), ());
             });
+            if edges.is_empty() && triangulation.get_edge_from_neighbors(from, to).is_some() {
+                sides.insert((from, to), ());
+            }
+            true
+        };
+        let mut prev: Option<usize> = None;
+        segments(self).for_each(|(i, j)| {
+            let Some(vj) = poly2tri[j] else { return };
+            if let Some(p) = prev {
+                let Some(v) = poly2tri[p] else { return };
+                if constrain(triangulation, v, vj, false) {
+                    prev = None;
+                }
+            } else {
+                let Some(vi) = poly2tri[i] else { return };
+                if !constrain(triangulation, vi, vj, true) {
+                    prev = Some(i);
+                }
+            }
+        });
+        sides
     }
 }
+
+/// Edges of the boundary in a triangulation, directed so that the face
+/// lies on their left.
+type Sides = HashMap<(FixedVertexHandle, FixedVertexHandle), ()>;
 
 fn spade_round(x: f64) -> f64 {
     match f64::abs(x) < MIN_ALLOWED_VALUE {
@@ -553,17 +573,28 @@ fn trimming_tessellation<S>(surface: &S, polyboundary: &PolyBoundary, tol: f64) 
 where S: PreMeshableSurface {
     let mut triangulation = Cdt::new();
     let mut boundary_map = HashMap::<FixedVertexHandle, Point3>::default();
-    polyboundary.insert_to(&mut triangulation, &mut boundary_map);
+    let sides = polyboundary.insert_to(&mut triangulation, &mut boundary_map);
     insert_surface(&mut triangulation, surface, polyboundary, tol);
+    let labels = labels(&triangulation, &sides);
     let mut mesh = triangulation_into_polymesh(
         triangulation.vertices(),
-        triangulation.inner_faces(),
+        triangulation.inner_faces().map(|f| (f, f.fix())),
         surface,
         polyboundary,
         &boundary_map,
+        &labels,
     );
     mesh.make_face_compatible_to_normal();
     mesh
+}
+
+fn segments(polyboundary: &PolyBoundary) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let mut counter = 0;
+    polyboundary.0.iter().map(Vec::len).flat_map(move |len| {
+        let range = counter..counter + len;
+        counter += len;
+        range.circular_tuple_windows()
+    })
 }
 
 /// Inserts parameter divisions into triangulation.
@@ -590,9 +621,21 @@ fn insert_surface(
         .into_iter()
         .map(|u| {
             vdiv.iter()
-                .map(|v| match polyline.include(Point2::new(u, *v)) {
-                    true => triangulation.insert(SPoint2::new(u, *v)).ok(),
-                    false => None,
+                .map(|v| {
+                    let p = SPoint2::new(u, *v);
+                    // Not on the boundary: that would split its edge with
+                    // a vertex the face next to it doesn't have.
+                    let on_boundary = match triangulation.locate(p) {
+                        PositionInTriangulation::OnVertex(_) => true,
+                        PositionInTriangulation::OnEdge(edge) => {
+                            triangulation.is_constraint_edge(edge.as_undirected())
+                        }
+                        _ => false,
+                    };
+                    match !on_boundary && polyline.include(Point2::new(u, *v)) {
+                        true => triangulation.insert(p).ok(),
+                        false => None,
+                    }
                 })
                 .collect()
         })
@@ -657,13 +700,64 @@ fn with_boundary_levels(div: Vec<f64>, polyline: &PolyBoundary, axis: usize) -> 
     out
 }
 
+type InnerFace<'a> = handles::FaceHandle<'a, handles::InnerTag, SPoint2, (), CdtEdge<()>, ()>;
+type FixedInnerFace = handles::FixedFaceHandle<handles::InnerTag>;
+
+/// Which triangles lie inside the boundary, as far as its segments
+/// (`sides`, directed: the face lies on their left) tell: a triangle on a
+/// segment is inside if it runs the segment's way, outside if it runs
+/// against it, and the labels spread to neighbours across edges that
+/// aren't segments. Testing a triangle's center against the boundary can
+/// put a sliver along it on either side, leaving a hole in the mesh; this
+/// can't. Triangles reached both ways (where a segment is missing from the
+/// triangulation, and the labels leak through) or not at all are left
+/// out, for the test of their center.
+fn labels(triangulation: &Cdt, sides: &Sides) -> HashMap<FixedInnerFace, bool> {
+    let mut reached: HashMap<FixedInnerFace, [bool; 2]> = HashMap::default();
+    let mut queue: Vec<(InnerFace<'_>, bool)> = Vec::new();
+    let segment = |e: &handles::DirectedEdgeHandle<'_, SPoint2, (), CdtEdge<()>, ()>| {
+        (e.from().fix(), e.to().fix())
+    };
+    for face in triangulation.inner_faces() {
+        for edge in face.adjacent_edges() {
+            let (a, b) = segment(&edge);
+            if sides.contains_key(&(a, b)) {
+                queue.push((face, true));
+            } else if sides.contains_key(&(b, a)) {
+                queue.push((face, false));
+            }
+        }
+    }
+    while let Some((face, inside)) = queue.pop() {
+        let marks = reached.entry(face.fix()).or_default();
+        if marks[inside as usize] {
+            continue;
+        }
+        marks[inside as usize] = true;
+        for edge in face.adjacent_edges() {
+            let (a, b) = segment(&edge);
+            if sides.contains_key(&(a, b)) || sides.contains_key(&(b, a)) {
+                continue;
+            }
+            if let Some(next) = edge.rev().face().as_inner() {
+                queue.push((next, inside));
+            }
+        }
+    }
+    reached
+        .into_iter()
+        .filter_map(|(face, [outside, inside])| (inside != outside).then_some((face, inside)))
+        .collect()
+}
+
 /// Converts triangulation into `PolygonMesh`.
 fn triangulation_into_polymesh<'a>(
     vertices: VertexIterator<'a, SPoint2, (), CdtEdge<()>, ()>,
-    triangles: InnerFaceIterator<'a, SPoint2, (), CdtEdge<()>, ()>,
+    triangles: impl Iterator<Item = (InnerFace<'a>, FixedInnerFace)>,
     surface: &impl ParametricSurface3D,
     polyline: &PolyBoundary,
     boundary_map: &HashMap<FixedVertexHandle, Point3>,
+    labels: &HashMap<FixedInnerFace, bool>,
 ) -> PolygonMesh {
     let mut positions = Vec::<Point3>::new();
     let mut uv_coords = Vec::<Vector2>::new();
@@ -684,8 +778,14 @@ fn triangulation_into_polymesh<'a>(
         })
         .collect();
     let tri_faces: Vec<[StandardVertex; 3]> = triangles
-        .map(|tri| tri.vertices())
-        .filter(|tri| {
+        .filter(|(_, face)| labels.get(face).copied() != Some(false))
+        .map(|(tri, face)| (tri.vertices(), face))
+        .filter(|(tri, face)| {
+            // Triangles labeled from the boundary (see [`labels`]); the
+            // test of the center is for the rest.
+            if labels.get(face) == Some(&true) {
+                return true;
+            }
             fn sp2cg(p: SPoint2) -> Point2 { Point2::new(p.x, p.y) }
             let tri = array![i => sp2cg(*tri[i].as_ref()); 3];
             let (a, b) = (tri[1] - tri[0], tri[2] - tri[0]);
@@ -693,7 +793,7 @@ fn triangulation_into_polymesh<'a>(
             let area = a.x * b.y - a.y * b.x;
             polyline.include(c) && !area.so_small2()
         })
-        .map(|tri| {
+        .map(|(tri, _)| {
             let idcs = array![i => vmap[&tri[i].fix()]; 3];
             array![i => [idcs[i], idcs[i], idcs[i]].into(); 3]
         })

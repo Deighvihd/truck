@@ -165,3 +165,92 @@ fn robust_closed() {
         .remove_unused_attrs();
     assert_eq!(mesh.shell_condition(), ShellCondition::Closed);
 }
+
+/// The segments of a face's boundary that its mesh leaves out. The face
+/// is JSON: its surface, orientation, and wires of polylines (one per
+/// edge, oriented as the wire runs).
+fn missing_boundary(json: &str) -> usize {
+    type TEdge = truck_topology::Edge<Point3, PolylineCurve<Point3>>;
+    type TWire = truck_topology::Wire<Point3, PolylineCurve<Point3>>;
+    type TFace = truck_topology::Face<Point3, PolylineCurve<Point3>, Surface>;
+    type TShell = truck_topology::Shell<Point3, PolylineCurve<Point3>, Surface>;
+    let data: serde_json::Value = serde_json::from_str(json).unwrap();
+    let surface: Surface = serde_json::from_value(data["surface"].clone()).unwrap();
+    let mut wires: Vec<Vec<Vec<[f64; 3]>>> = serde_json::from_value(data["wires"].clone()).unwrap();
+    // As the face runs (an inverted face's wires backwards): as the
+    // surface runs.
+    let inverted = data["orientation"] == false;
+    if inverted {
+        wires.iter_mut().for_each(|wire| {
+            wire.reverse();
+            wire.iter_mut().for_each(|e| e.reverse());
+        });
+    }
+    let wires: Vec<TWire> = wires
+        .iter()
+        .map(|wire| {
+            let points =
+                |e: &Vec<[f64; 3]>| -> Vec<Point3> { e.iter().map(|&p| p.into()).collect() };
+            let vertices: Vec<_> = wire
+                .iter()
+                .map(|e| truck_topology::Vertex::new(points(e)[0]))
+                .collect();
+            wire.iter()
+                .enumerate()
+                .map(|(i, e)| {
+                    let next = &vertices[(i + 1) % vertices.len()];
+                    TEdge::new(&vertices[i], next, PolylineCurve(points(e)))
+                })
+                .collect()
+        })
+        .collect();
+    let mut face = TFace::new(wires, surface);
+    if inverted {
+        face.invert();
+    }
+    let shell: TShell = vec![face].into_iter().collect();
+    let meshed = shell.triangulation(0.025);
+    let face = &meshed[0];
+    let polygon = face.surface().unwrap();
+    let positions = polygon.positions();
+    // Positions to a billionth (consecutive edges' polylines can end and
+    // start a rounding error apart).
+    let key = |p: Point3| [p.x, p.y, p.z].map(|x| (x * 1.0e9).round() as i64);
+    let mut edges = std::collections::HashSet::new();
+    for tri in polygon.faces().triangle_iter() {
+        for k in 0..3 {
+            let (a, b) = (
+                key(positions[tri[k].pos]),
+                key(positions[tri[(k + 1) % 3].pos]),
+            );
+            edges.insert((a, b));
+            edges.insert((b, a));
+        }
+    }
+    face.boundaries()
+        .iter()
+        .flat_map(|w| w.edge_iter())
+        .map(|e| {
+            let c = e.oriented_curve();
+            c.windows(2)
+                .filter(|w| key(w[0]) != key(w[1]) && !edges.contains(&(key(w[0]), key(w[1]))))
+                .count()
+        })
+        .sum()
+}
+
+/// Faces from booleans whose meshes left boundary segments out: slivers
+/// along the boundary whose center lies within rounding of it (taken as
+/// outside), and a boundary vertex whose segment can't be added, so a
+/// chord past it is (a sliver's side is not the boundary's).
+#[test]
+fn trimmed_faces_mesh_their_whole_boundary() {
+    for name in ["sliver-plane", "sliver-nurbs", "chord-plane"] {
+        let path = format!(
+            "{}/tests/tessellation/trimming/{name}.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let json = std::fs::read_to_string(path).unwrap();
+        assert_eq!(missing_boundary(&json), 0, "{name}");
+    }
+}
