@@ -444,7 +444,20 @@ impl PolyBoundary {
             }
             _ => {}
         }
-        if !closed.iter().any(|curve| loop_orientation(curve)) {
+        // Only holes: the domain is the whole surface around them. But a
+        // face whose loops are all flat (two edges along the same line, a
+        // sliver a boolean can leave) has no area, not all of it.
+        let flat = |curve: &Vec<SurfacePoint>| {
+            let area = curve
+                .iter()
+                .circular_tuple_windows()
+                .fold(0.0, |sum, (p, q)| sum + (q.x + p.x) * (q.y - p.y))
+                .abs();
+            let bdb: BoundingBox<Point2> = curve.iter().map(|p| p.uv).collect();
+            area <= 1.0e-9 * bdb.diagonal().magnitude2()
+        };
+        let degenerate = !closed.is_empty() && closed.iter().all(flat);
+        if !degenerate && !closed.iter().any(|curve| loop_orientation(curve)) {
             if let (Some((u0, u1)), Some((v0, v1))) = surface.try_range_tuple() {
                 let p = [
                     (Point2::new(u0, v0), surface.subs(u0, v0)).into(),

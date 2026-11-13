@@ -254,3 +254,22 @@ fn trimmed_faces_mesh_their_whole_boundary() {
         assert_eq!(missing_boundary(&json), 0, "{name}");
     }
 }
+
+/// A face bounded by two edges along the same line (a sliver a boolean can
+/// leave between coincident edges) has no area: it meshes to nothing, not
+/// to the whole parameter range of its surface.
+#[test]
+fn flat_face_meshes_to_nothing() {
+    let plane = Plane::new(
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+    );
+    let v = builder::vertices([Point3::new(-2.0, 0.5, 0.0), Point3::new(2.0, 0.5, 0.0)]);
+    let wire: Wire = vec![builder::line(&v[0], &v[1]), builder::line(&v[1], &v[0])].into();
+    let face = Face::new(vec![wire], Surface::Plane(plane));
+    let shell: Shell = vec![face].into();
+    let meshed = shell.triangulation(0.01);
+    let polygon = meshed[0].surface().unwrap();
+    assert_eq!(polygon.faces().len(), 0);
+}
