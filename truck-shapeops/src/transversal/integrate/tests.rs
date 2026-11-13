@@ -168,3 +168,26 @@ fn frame_shaped_tool() {
         .count();
     assert_eq!(tops, 2);
 }
+
+// A box joined to a cylinder, reaching out past its wall near the top:
+// the wall keeps a notch where the box's sides meet it. Undivided along
+// its height (it's straight that way), the wall's mesh had only the top
+// and bottom rims and the notch's corners, and triangles spanned a third
+// of the way round, cutting deep inside: the join measured less than the
+// cylinder alone.
+#[test]
+fn notched_wall_meshes_on_its_surface() {
+    let v = builder::vertex(Point3::new(9.5, 0.0, 0.0));
+    let w = builder::rsweep(&v, Point3::origin(), Vector3::unit_z(), Rad(7.0), 3);
+    let f = builder::try_attach_plane(&[w]).unwrap();
+    let cylinder: Solid = builder::tsweep(&f, Vector3::unit_z() * 27.7);
+
+    let top = square_wire(-5.5, 0.2, 5.2, 9.74, 24.0);
+    let face: Face = builder::try_attach_plane(&[top]).unwrap();
+    let tool: Solid = builder::tsweep(&face, Vector3::unit_z() * 3.0);
+
+    let joined = crate::or(&cylinder, &tool, 0.05).unwrap();
+    let volume = |s: &Solid| s.triangulation(0.01).to_polygon().volume();
+    let (before, after) = (volume(&cylinder), volume(&joined));
+    assert!(after > before, "{before} → {after}");
+}

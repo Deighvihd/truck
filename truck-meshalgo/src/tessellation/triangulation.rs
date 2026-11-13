@@ -581,6 +581,11 @@ fn insert_surface(
         .collect();
     let range = ((bdb.min()[0], bdb.max()[0]), (bdb.min()[1], bdb.max()[1]));
     let (udiv, vdiv) = surface.parameter_division(range, tol);
+    let (udiv, vdiv) = match (udiv.len(), vdiv.len()) {
+        (2, n) if n > 2 => (with_boundary_levels(udiv, polyline, 0), vdiv),
+        (n, 2) if n > 2 => (udiv, with_boundary_levels(vdiv, polyline, 1)),
+        _ => (udiv, vdiv),
+    };
     let insert_res: Vec<Vec<Option<_>>> = udiv
         .into_iter()
         .map(|u| {
@@ -614,6 +619,42 @@ fn insert_surface(
             }
         }
     });
+}
+
+/// The most levels [`with_boundary_levels`] adds.
+const MAX_BOUNDARY_LEVELS: usize = 16;
+
+/// A surface left undivided along one direction (straight that way) has
+/// grid points only at the ends of its range there; a boundary with
+/// corners in between (a notch a boolean cut into a wall) then makes
+/// triangles spanning far across the curved direction, cutting through
+/// the surface. So levels are added at the boundary's vertices along that
+/// direction (`axis`: 0 for u, 1 for v), at most [`MAX_BOUNDARY_LEVELS`].
+fn with_boundary_levels(div: Vec<f64>, polyline: &PolyBoundary, axis: usize) -> Vec<f64> {
+    let (Some(&lo), Some(&hi)) = (div.first(), div.last()) else {
+        return div;
+    };
+    let gap = (hi - lo) * 1.0e-3;
+    let mut levels: Vec<f64> = polyline
+        .0
+        .iter()
+        .flatten()
+        .map(|p| p[axis])
+        .filter(|x| *x > lo + gap && *x < hi - gap)
+        .collect();
+    levels.sort_by(f64::total_cmp);
+    levels.dedup_by(|a, b| *a - *b < gap);
+    if levels.len() > MAX_BOUNDARY_LEVELS {
+        let n = levels.len();
+        levels = (0..MAX_BOUNDARY_LEVELS)
+            .map(|i| levels[(2 * i + 1) * n / (2 * MAX_BOUNDARY_LEVELS)])
+            .collect();
+    }
+    let mut out = Vec::with_capacity(levels.len() + 2);
+    out.push(lo);
+    out.extend(levels);
+    out.push(hi);
+    out
 }
 
 /// Converts triangulation into `PolygonMesh`.
