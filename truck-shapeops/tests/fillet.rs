@@ -483,3 +483,98 @@ fn fillet_with_reversed_side_face() {
     shell.push(res.simple_fillet.fillet);
     assert_eq!(shell.shell_condition(), ShellCondition::Closed);
 }
+
+/// A D (a half disk swept up): its top face has two edges, the line and
+/// the arc, so the arc is the line's neighbour at both ends; and its
+/// curved wall is the face at both ends of the line. Rounding the line
+/// cuts the arc at both ends, and both corners off the wall.
+#[test]
+fn fillet_a_d_shapes_top_line() {
+    use truck_modeling::{builder, Curve as MCurve, Surface as MSurface};
+
+    let v0 = builder::vertex(Point3::new(-1.0, 0.0, 0.0));
+    let v1 = builder::vertex(Point3::new(1.0, 0.0, 0.0));
+    let line: truck_modeling::Edge = builder::line(&v0, &v1);
+    let arc: truck_modeling::Edge = builder::circle_arc(&v1, &v0, Point3::new(0.0, 1.0, 0.0));
+    let face: truck_modeling::Face =
+        builder::try_attach_plane(vec![vec![line, arc].into()]).unwrap();
+    let d: truck_modeling::Solid = builder::tsweep(&face, Vector3::unit_z());
+    let shell: Shell = d.into_boundaries().pop().unwrap().mapped(
+        |p| *p,
+        |c| match c {
+            MCurve::Line(l) => Curve::Line(*l),
+            MCurve::NurbsCurve(n) => Curve::Nurbs(n.clone()),
+            MCurve::BSplineCurve(b) => Curve::Nurbs(NurbsCurve::from(b.clone())),
+            MCurve::IntersectionCurve(_) => unreachable!(),
+        },
+        |s| match s {
+            MSurface::Plane(p) => Surface::Plane(*p),
+            MSurface::NurbsSurface(n) => Surface::Nurbs(n.clone()),
+            MSurface::BSplineSurface(b) => Surface::Nurbs(NurbsSurface::from(b.clone())),
+            MSurface::RevolutedCurve(_) => unreachable!(),
+        },
+    );
+
+    let face_at = |shell: &Shell, p: Point3| {
+        shell
+            .face_iter()
+            .position(|f| {
+                let s = f.surface();
+                s.search_parameter(p, None, 10)
+                    .is_some_and(|(u, v)| s.subs(u, v).near(&p))
+            })
+            .unwrap()
+    };
+    let top = face_at(&shell, Point3::new(0.0, 0.5, 1.0));
+    let flat = face_at(&shell, Point3::new(0.0, 0.0, 0.5));
+    let wall = face_at(&shell, Point3::new(0.0, 1.0, 0.5));
+    let ends = [Point3::new(-1.0, 0.0, 1.0), Point3::new(1.0, 0.0, 1.0)];
+    let edge = shell
+        .edge_iter()
+        .find(|e| {
+            let (a, b) = (e.front().point(), e.back().point());
+            ends.iter().any(|p| p.near(&a))
+                && ends.iter().any(|p| p.near(&b))
+                && matches!(e.curve(), Curve::Line(_))
+        })
+        .unwrap();
+
+    // Either face first.
+    for (a, b) in [(top, flat), (flat, top)] {
+        let mut shell = shell.clone();
+        let FilletWithSide {
+            simple_fillet:
+                SimpleFillet {
+                    fillet,
+                    face0,
+                    face1,
+                },
+            side0,
+            side1,
+        } = fillet_with_side(
+            &shell[a],
+            &shell[b],
+            edge.id(),
+            Some(&shell[wall]),
+            Some(&shell[wall]),
+            0.2,
+            0.001,
+        )
+        .unwrap();
+        shell[a] = face0;
+        shell[b] = face1;
+        let (side0, side1) = (side0.unwrap(), side1.unwrap());
+        assert_eq!(side0.id(), side1.id());
+        shell[wall] = side0;
+        shell.push(fillet);
+        assert_eq!(shell.shell_condition(), ShellCondition::Closed);
+
+        let mesh = shell.robust_triangulation(0.001).to_polygon();
+        // The half disk less the corner: each point of the corner's
+        // section (a square of 0.2 less a quarter circle) removed across
+        // the D's width there, 2√(1 − y²): 0.017138.
+        let volume = mesh.volume();
+        let expected = std::f64::consts::PI / 2.0 - 0.017138;
+        assert!((volume - expected).abs() < 2e-3, "{volume} vs {expected}");
+    }
+}

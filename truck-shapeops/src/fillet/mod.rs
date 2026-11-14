@@ -84,6 +84,7 @@ where
         }
     };
 
+    let back_parameter;
     let (new_back_edge, back_der) = {
         let back_curve = back_edge.curve();
         let back_curve_hint = match back_edge.orientation() {
@@ -104,6 +105,7 @@ where
             curve.cut(t0);
         }
         let der = back_curve.der(t1);
+        back_parameter = t1;
         let new_back_edge = back_edge.cut_with_parameter(&v1, t1)?.1;
         match back_edge.orientation() {
             true => (new_back_edge, der),
@@ -112,6 +114,43 @@ where
     };
 
     let fillet_edge = Edge::new(new_front_edge.back(), new_back_edge.front(), curve);
+    // One edge on both sides of the filleted one (a face of two edges: a
+    // D's flat top, its line and its arc): it keeps the part between both
+    // cuts, from the back cut round to the front one.
+    if front_edge.is_same(&back_edge) {
+        let (front_vertex, back_vertex) = (new_front_edge.back(), new_back_edge.front());
+        let middle = new_front_edge
+            .cut_with_parameter(back_vertex, back_parameter)?
+            .1;
+        if middle.back() != front_vertex {
+            return None;
+        }
+        let new_boundaries = face
+            .absolute_boundaries()
+            .iter()
+            .map(|boundary| {
+                boundary
+                    .iter()
+                    .map(|edge| {
+                        let new = match edge.id() {
+                            id if id == filleted_edge_id => &fillet_edge,
+                            id if id == front_edge.id() => &middle,
+                            _ => return edge.clone(),
+                        };
+                        match face.orientation() {
+                            true => new.clone(),
+                            false => new.inverse(),
+                        }
+                    })
+                    .collect()
+            })
+            .collect::<Vec<_>>();
+        let mut new_face = Face::try_new(new_boundaries, face.surface()).ok()?;
+        if !face.orientation() {
+            new_face.invert();
+        }
+        return Some((new_face, fillet_edge, (front_der, back_der)));
+    }
     let new_boundaries = face
         .absolute_boundaries()
         .iter()
@@ -300,6 +339,74 @@ pub struct FilletWithSide<C, S> {
     pub side1: Option<Face<Point3, C, S>>,
 }
 
+/// A corner to cut off a side face: the fillet's end edge, the corner
+/// vertex, and the rounded faces' trimmed edges into and out of it.
+type Corner<'a, C> = (
+    &'a Edge<Point3, C>,
+    VertexID<Point3>,
+    &'a Edge<Point3, C>,
+    &'a Edge<Point3, C>,
+);
+
+/// A side's boundaries (absolute, as stored) with `corners` cut off: at
+/// each, the edges into and out of the corner replaced by the rounded
+/// faces' trimmed ones (`right_face_back_edge`, `left_face_front_edge`),
+/// and the fillet's end edge between them. The corners are found before
+/// anything changes: two can share an edge (a D's wall, its top arc at
+/// both ends of the line), which must then be trimmed the same way.
+fn side_boundaries<C: Clone>(
+    boundaries: &[Wire<Point3, C>],
+    orientation: bool,
+    corners: &[Corner<'_, C>],
+) -> Option<Vec<Wire<Point3, C>>> {
+    let oriented = |w: &Wire<Point3, C>| match orientation {
+        true => w.clone(),
+        false => w.inverse(),
+    };
+    let wires: Vec<Wire<Point3, C>> = boundaries.iter().map(oriented).collect();
+    // (wire, edge into the corner) per corner.
+    let at: Vec<(usize, usize)> = corners
+        .iter()
+        .map(|(_, corner, _, _)| {
+            wires.iter().enumerate().find_map(|(i, wire)| {
+                wire.iter()
+                    .position(|edge| edge.back().id() == *corner)
+                    .map(|j| (i, j))
+            })
+        })
+        .collect::<Option<_>>()?;
+    let mut new_wires = Vec::with_capacity(wires.len());
+    for (i, wire) in wires.iter().enumerate() {
+        let len = wire.len();
+        let mut replaced: Vec<Option<Edge<Point3, C>>> = vec![None; len];
+        let mut after: Vec<Option<Edge<Point3, C>>> = vec![None; len];
+        for ((fillet_edge, _, left_front, right_back), &(w, j)) in corners.iter().zip(&at) {
+            if w != i {
+                continue;
+            }
+            for (k, new) in [
+                (j, right_back.inverse()),
+                ((j + 1) % len, left_front.inverse()),
+            ] {
+                match &replaced[k] {
+                    Some(old) if old.id() != new.id() => return None,
+                    _ => replaced[k] = Some(new),
+                }
+            }
+            after[j] = Some(fillet_edge.inverse());
+        }
+        let mut new_wire = Wire::new();
+        for k in 0..len {
+            new_wire.push_back(replaced[k].clone().unwrap_or_else(|| wire[k].clone()));
+            if let Some(e) = &after[k] {
+                new_wire.push_back(e.clone());
+            }
+        }
+        new_wires.push(oriented(&new_wire));
+    }
+    Some(new_wires)
+}
+
 fn create_new_side<C, S>(
     side: &Face<Point3, C, S>,
     fillet_edge: &Edge<Point3, C>,
@@ -313,48 +420,40 @@ where
     S: FilletedSurface<C>,
     IntersectionCurve<C, S, S>: ToSameGeometry<C>,
 {
-    let (boundary_idx, edge_idx) = side.boundary_iters().into_iter().enumerate().find_map(
-        |(boundary_idx, boundary_iter)| {
-            boundary_iter
-                .enumerate()
-                .find(|(_, edge)| edge.back().id() == corner_vertex_id)
-                .map(move |(edge_idx, _)| (boundary_idx, edge_idx))
-        },
+    let new_boundaries = side_boundaries(
+        side.absolute_boundaries(),
+        side.orientation(),
+        &[(
+            fillet_edge,
+            corner_vertex_id,
+            left_face_front_edge,
+            right_face_back_edge,
+        )],
     )?;
-    let new_boundaries = side
-        .absolute_boundaries()
-        .iter()
-        .enumerate()
-        .map(|(idx, boundary)| {
-            let mut new_boundary = boundary.clone();
-            if idx == boundary_idx {
-                let len = new_boundary.len();
-                if side.orientation() {
-                    new_boundary[edge_idx] = right_face_back_edge.inverse();
-                    new_boundary[(edge_idx + 1) % len] = left_face_front_edge.inverse();
-                    new_boundary.insert(edge_idx + 1, fillet_edge.inverse());
-                } else {
-                    new_boundary[len - edge_idx - 1] = right_face_back_edge.clone();
-                    new_boundary[(2 * len - edge_idx - 2) % len] = left_face_front_edge.clone();
-                    // Oriented index `edge_idx` is absolute index
-                    // `len - edge_idx - 1`; the fillet edge goes before it.
-                    new_boundary.insert(len - edge_idx - 1, fillet_edge.clone());
-                }
-            }
-            new_boundary
-        })
-        .collect();
     // Checked before the shared edge's curve changes: boundaries that
     // don't close make no face (not a panic).
     let mut new_face = Face::try_new(new_boundaries, side.surface()).ok()?;
-    let side_surface = side.oriented_surface();
-    let fillet_surface = fillet_surface.clone();
-    let new_curve = IntersectionCurve::new(side_surface, fillet_surface, fillet_edge.curve());
-    fillet_edge.set_curve(new_curve.to_same_geometry());
+    set_side_curve(side, fillet_edge, fillet_surface);
     if !side.orientation() {
         new_face.invert();
     }
     Some(new_face)
+}
+
+/// The fillet's end edge becomes where its surface meets the side's.
+fn set_side_curve<C, S>(
+    side: &Face<Point3, C, S>,
+    fillet_edge: &Edge<Point3, C>,
+    fillet_surface: &S,
+) where
+    C: FilletedCurve<S>,
+    S: FilletedSurface<C>,
+    IntersectionCurve<C, S, S>: ToSameGeometry<C>,
+{
+    let side_surface = side.oriented_surface();
+    let new_curve =
+        IntersectionCurve::new(side_surface, fillet_surface.clone(), fillet_edge.curve());
+    fillet_edge.set_curve(new_curve.to_same_geometry());
 }
 
 /// Create fillet with side faces
@@ -391,6 +490,37 @@ where
     let (v0, v1) = filleted_edge.ends();
 
     let fillet_surface = simple_fillet.fillet.surface();
+    // One face at both ends (the curved wall of a D, at its top line's
+    // ends): both corners cut off it at once.
+    let same_side = match (side0, side1) {
+        (Some(side0), Some(side1)) if side0.id() == side1.id() => Some(side0),
+        _ => None,
+    };
+    if let Some(side0) = same_side {
+        let (end0, end1) = (
+            &simple_fillet.fillet.absolute_boundaries()[0][1],
+            &simple_fillet.fillet.absolute_boundaries()[0][3],
+        );
+        let both = side_boundaries(
+            side0.absolute_boundaries(),
+            side0.orientation(),
+            &[
+                (end0, v0.id(), &front_edge0, &back_edge1),
+                (end1, v1.id(), &front_edge1, &back_edge0),
+            ],
+        )?;
+        let mut new_side = Face::try_new(both, side0.surface()).ok()?;
+        set_side_curve(side0, end0, &fillet_surface);
+        set_side_curve(side0, end1, &fillet_surface);
+        if !side0.orientation() {
+            new_side.invert();
+        }
+        return Some(FilletWithSide {
+            simple_fillet,
+            side0: Some(new_side.clone()),
+            side1: Some(new_side),
+        });
+    }
     let new_side0 = side0.and_then(|side0| {
         let fillet_edge = &simple_fillet.fillet.absolute_boundaries()[0][1];
         create_new_side(
