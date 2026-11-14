@@ -42,17 +42,20 @@ impl ContactCircle {
             let sign = -f64::signum(n0.cross(n1).dot(der));
             sign * radius
         };
-        let center = (0..100).find_map(|_i| {
+        // Parallel normals (tangent surfaces) or a degenerate surface point
+        // make the systems singular: no contact circle.
+        let mut center = None;
+        for _ in 0..100 {
             let (n0, n1) = (surface0.normal(u0, v0), surface1.normal(u1, v1));
-            let (c, q0, q1) = contact_points((p, der), (p0, n0), (p1, n1), signed_radius);
+            let (c, q0, q1) = contact_points((p, der), (p0, n0), (p1, n1), signed_radius)?;
             if p0.near(&q0) && p1.near(&q1) {
-                Some(c)
-            } else {
-                (p0, (u0, v0)) = next_point(surface0, (u0, v0), (p0, q0), signed_radius);
-                (p1, (u1, v1)) = next_point(surface1, (u1, v1), (p1, q1), signed_radius);
-                None
+                center = Some(c);
+                break;
             }
-        })?;
+            (p0, (u0, v0)) = next_point(surface0, (u0, v0), (p0, q0), signed_radius)?;
+            (p1, (u1, v1)) = next_point(surface1, (u1, v1), (p1, q1), signed_radius)?;
+        }
+        let center = center?;
         let (vec0, vec1) = (p0 - center, p1 - center);
         Some(Self {
             center,
@@ -117,7 +120,7 @@ fn contact_points(
     // origin and normal
     plane1: (Point3, Vector3),
     signed_radius: f64,
-) -> (Point3, Point3, Point3) {
+) -> Option<(Point3, Point3, Point3)> {
     let ((p, der), (p0, n0), (p1, n1)) = (point_on_curve, plane0, plane1);
     let mat = Matrix3::from_cols(der, n0, n1).transpose();
     let vec = Vector3::new(
@@ -125,10 +128,10 @@ fn contact_points(
         n0.dot(p0.to_vec()) + signed_radius,
         n1.dot(p1.to_vec()) + signed_radius,
     );
-    let center = Point3::from_vec(mat.invert().unwrap() * vec);
+    let center = Point3::from_vec(mat.invert()? * vec);
     let q0 = center - signed_radius * n0;
     let q1 = center - signed_radius * n1;
-    (center, q0, q1)
+    Some((center, q0, q1))
 }
 
 fn next_point(
@@ -136,7 +139,7 @@ fn next_point(
     (u, v): (f64, f64),
     (p, q): (Point3, Point3),
     signed_radius: f64,
-) -> (Point3, (f64, f64)) {
+) -> Option<(Point3, (f64, f64))> {
     let ders = surface.ders(1, u, v);
     let (uder, vder) = (ders[1][0], ders[0][1]);
     let n = uder.cross(vder);
@@ -144,8 +147,8 @@ fn next_point(
     let n_vder = signed_radius * surface.normal_vder(u, v);
     let mat = Matrix3::from_cols(uder + n_uder, vder + n_vder, n);
     let vec = q - p;
-    let del = mat.invert().unwrap() * vec;
+    let del = mat.invert()? * vec;
     debug_assert!(del.z.so_small(), "{del:?}");
     let (u, v) = (u + del.x, v + del.y);
-    (surface.subs(u, v), (u, v))
+    Some((surface.subs(u, v), (u, v)))
 }

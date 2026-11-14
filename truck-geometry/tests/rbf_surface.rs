@@ -204,3 +204,19 @@ fn test_cpwae() {
     assert_near!(contact0.point, rbf_surface.subs(0.0, t));
     assert_near!(contact0.point, adjacent_curve.subs(s));
 }
+
+/// Two planes with the same normal (faces meeting tangentially) have no
+/// contact circle: `None`, where solving for its center panicked on the
+/// singular system.
+#[test]
+fn no_contact_circle_between_parallel_planes() {
+    let line = Line(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0));
+    let plane0 = Plane::xy();
+    let plane1 = Plane::new(
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(0.0, -1.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+    );
+    let rfs = RbfSurface::new(line, plane0, plane1, 0.5);
+    assert!(rfs.contact_circle(0.5).is_none());
+}
