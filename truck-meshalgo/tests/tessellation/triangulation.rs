@@ -326,3 +326,37 @@ fn a_circle_smaller_than_the_tolerance_keeps_its_area() {
     // A square inscribed in the circle: 2r².
     assert!(area > r * r, "area {area}");
 }
+
+/// A disk thinner than the tolerance, far from the origin: Newton's steps
+/// finding points on its side never got below `TOLERANCE2` (rounding over
+/// the side's small height), so the side meshed to nothing.
+#[test]
+fn a_thin_disk_far_from_the_origin_meshes_whole() {
+    let (r, h) = (11.7, 0.0067);
+    for y in [0.0, 50.0, 75.0] {
+        let v = builder::vertex(Point3::new(0.0, y, r));
+        let wire: Wire =
+            builder::rsweep(&v, Point3::new(0.0, y, 0.0), Vector3::unit_y(), Rad(7.0), 2);
+        let face: Face = builder::try_attach_plane(&[wire]).unwrap();
+        let solid: Solid = builder::tsweep(&face, Vector3::new(0.0, h, 0.0));
+        let meshed = solid.robust_triangulation(0.025);
+        assert!(meshed.boundaries()[0]
+            .face_iter()
+            .all(|f| f.surface().is_some_and(|s| s.faces().len() > 0)));
+        let poly = meshed.to_polygon();
+        let p = poly.positions();
+        let volume: f64 = poly
+            .faces()
+            .triangle_iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|v| p[v.pos].to_vec());
+                a.dot(b.cross(c)) / 6.0
+            })
+            .sum();
+        let want = std::f64::consts::PI * r * r * h;
+        assert!(
+            (volume - want).abs() < 0.01 * want,
+            "{y}: {volume} vs {want}"
+        );
+    }
+}

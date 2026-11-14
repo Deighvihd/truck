@@ -177,13 +177,31 @@ where
     S: ParametricSurface<Point = P, Vector = P::Diff>,
 {
     let function = move |param: Vector2| SspVector::subs(surface, point, param);
-    let res = newton::solve(function, hint.into(), trials);
-    res.ok().and_then(
-        |Vector2 { x: u, y: v }| match surface.subs(u, v).near(&point) {
-            true => Some((u, v)),
-            false => None,
-        },
-    )
+    let on_point = |Vector2 { x: u, y: v }| surface.subs(u, v).near(&point).then_some((u, v));
+    match newton::solve(function, hint.into(), trials) {
+        Ok(res) => on_point(res),
+        // Newton's steps never got below `TOLERANCE2`: the parameter of a
+        // thin surface (a small derivative) far from the origin is fixed no
+        // better than that, rounding moves it about. Its iterates can still
+        // be on the point.
+        Err(_) => on_point(newton_iterate(function, hint.into(), NOISY_TRIALS)?),
+    }
+}
+
+/// Newton steps [`search_parameter`] takes again when they don't settle.
+const NOISY_TRIALS: usize = 16;
+
+/// `trials` Newton steps from `hint`, without a test for convergence.
+fn newton_iterate(
+    function: impl Fn(Vector2) -> CalcOutput<Vector2, Matrix2>,
+    mut hint: Vector2,
+    trials: usize,
+) -> Option<Vector2> {
+    for _ in 0..trials {
+        let CalcOutput { value, derivation } = function(hint);
+        hint -= derivation.invert()? * value;
+    }
+    Some(hint)
 }
 
 /// Searches the parameters of the intersection point of `surface` and `curve`.
