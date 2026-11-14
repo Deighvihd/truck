@@ -292,3 +292,37 @@ fn flat_loop_along_a_side_is_a_seam() {
     let polygon = meshed[0].surface().unwrap();
     assert!(polygon.faces().len() > 0);
 }
+
+/// A circle smaller than the tolerance, in two halves: each half within
+/// the tolerance of the one chord between its ends would mesh as that
+/// chord, there and back, a disk of no area. Bent edges get two segments.
+#[test]
+fn a_circle_smaller_than_the_tolerance_keeps_its_area() {
+    let r = 0.01;
+    let plane = Plane::new(
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+    );
+    let v = builder::vertices([Point3::new(r, 0.0, 0.0), Point3::new(-r, 0.0, 0.0)]);
+    let wire: Wire = vec![
+        builder::circle_arc(&v[0], &v[1], Point3::new(0.0, r, 0.0)),
+        builder::circle_arc(&v[1], &v[0], Point3::new(0.0, -r, 0.0)),
+    ]
+    .into();
+    let face = Face::new(vec![wire], Surface::Plane(plane));
+    let shell: Shell = vec![face].into();
+    let meshed = shell.triangulation(0.05);
+    let polygon = meshed[0].surface().unwrap();
+    let positions = polygon.positions();
+    let area: f64 = polygon
+        .faces()
+        .triangle_iter()
+        .map(|t| {
+            let [a, b, c] = t.map(|v| positions[v.pos]);
+            (b - a).cross(c - a).magnitude() / 2.0
+        })
+        .sum();
+    // A square inscribed in the circle: 2r².
+    assert!(area > r * r, "area {area}");
+}

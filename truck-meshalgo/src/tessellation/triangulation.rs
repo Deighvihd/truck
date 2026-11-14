@@ -70,8 +70,7 @@ where
         .map(move |(id, edge)| {
             let v0 = vmap.get(&edge.absolute_front().id()).unwrap();
             let v1 = vmap.get(&edge.absolute_back().id()).unwrap();
-            let curve = edge.curve();
-            let poly = PolylineCurve::from_curve(&curve, curve.range_tuple(), tol);
+            let poly = edge_polyline(&edge.curve(), tol);
             (id, Edge::debug_new(v0, v1, poly))
         })
         .collect();
@@ -119,8 +118,7 @@ where
             let v0 = vmap.entry_or_insert(vf).clone();
             let vb = edge.absolute_back();
             let v1 = vmap.entry_or_insert(vb).clone();
-            let curve = edge.curve();
-            let poly = PolylineCurve::from_curve(&curve, curve.range_tuple(), tol);
+            let poly = edge_polyline(&edge.curve(), tol);
             Edge::debug_new(&v0, &v1, poly)
         },
     );
@@ -145,6 +143,22 @@ where
     shell.face_iter().map(create_face).collect()
 }
 
+/// An edge's polyline within `tol` of it, of two segments at least where
+/// the curve bends: a small hole's two half circles each within `tol` of
+/// one chord would mesh as one segment there and back, a hole of no width.
+fn edge_polyline<C: PolylineableCurve>(curve: &C, tol: f64) -> PolylineCurve {
+    let range = curve.range_tuple();
+    let mut poly = PolylineCurve::from_curve(curve, range, tol);
+    if poly.len() == 2 {
+        let mid = curve.subs((range.0 + range.1) / 2.0);
+        let chord = poly[0].distance(poly[1]);
+        if mid.distance(poly[0].midpoint(poly[1])) > 0.1 * chord {
+            poly.0.insert(1, mid);
+        }
+    }
+    poly
+}
+
 /// Tessellates faces
 pub(super) fn cshell_tessellation<'a, C, S>(
     shell: &CompressedShell<Point3, C, S>,
@@ -160,7 +174,7 @@ where
         let curve = &edge.curve;
         CompressedEdge {
             vertices: edge.vertices,
-            curve: PolylineCurve::from_curve(curve, curve.range_tuple(), tol),
+            curve: edge_polyline(curve, tol),
         }
     };
     #[cfg(not(target_arch = "wasm32"))]
