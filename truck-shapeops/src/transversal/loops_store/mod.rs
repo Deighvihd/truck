@@ -368,8 +368,19 @@ impl<C> LoopsStore<Point3, C> {
             }
             ParameterKind::Inner(_) => {
                 let curve = self[loops_index][wire_index][edge_index].curve();
-                let (pt, t, _) =
-                    curve_surface_projection(&curve, None, another_surface, None, v.point(), 100)?;
+                // The mesh's point is only close. Where the edge grazes a
+                // curved surface, it crosses it twice close together, and
+                // Newton's method from the mesh's point can run to the
+                // other crossing: one an earlier curve already put a vertex
+                // at, at this edge's end, where it can't be cut again. Then
+                // the crossing inside the edge nearest the point is the one.
+                let (t0, t1) = curve.range_tuple();
+                let inner = |t: f64| t0 + TOLERANCE < t && t < t1 - TOLERANCE;
+                let (pt, t) =
+                    curve_surface_projection(&curve, None, another_surface, None, v.point(), 100)
+                        .map(|(pt, t, _)| (pt, t))
+                        .filter(|(_, t)| inner(*t))
+                        .or_else(|| crossing_near(&curve, another_surface, v.point()))?;
                 v.set_point(pt);
                 let edge = self[loops_index][wire_index][edge_index].absolute_clone();
                 let edge_id = edge.id();
@@ -380,6 +391,74 @@ impl<C> LoopsStore<Point3, C> {
         }
         Some(())
     }
+}
+
+/// The crossing of `curve` with `surface` nearest `point` strictly inside
+/// the curve's range (by parameter), found by walking along the curve from
+/// the parameter nearest `point` both ways until the side of the surface
+/// changes, then bisecting.
+fn crossing_near<C, S>(curve: &C, surface: &S, point: Point3) -> Option<(Point3, f64)>
+where
+    C: ParametricCurve3D + BoundedCurve + SearchNearestParameter<D1, Point = Point3>,
+    S: ParametricSurface3D + SearchNearestParameter<D2, Point = Point3>, {
+    const STEPS: usize = 256;
+    let (t0, t1) = curve.range_tuple();
+    let start = curve
+        .search_nearest_parameter(point, None, 10)?
+        .clamp(t0, t1);
+    // Which side of the surface `curve(t)` lies on (signed distance).
+    let side = |t: f64, hint: &mut Option<(f64, f64)>| -> Option<f64> {
+        let p = curve.subs(t);
+        let (u, v) = surface.search_nearest_parameter(p, *hint, 10)?;
+        *hint = Some((u, v));
+        Some((p - surface.subs(u, v)).dot(surface.normal(u, v)))
+    };
+    let step = (t1 - t0) / STEPS as f64;
+    let mut best: Option<(f64, Point3, f64)> = None;
+    for dir in [1.0, -1.0] {
+        let mut hint = None;
+        let (mut a, mut fa) = (start, side(start, &mut hint)?);
+        for k in 1..=STEPS {
+            let b = (start + dir * step * k as f64).clamp(t0, t1);
+            let fb = side(b, &mut hint)?;
+            if fa.signum() != fb.signum() {
+                // Bisect [a, b] (in either order) down to a point.
+                let (mut lo, mut hi, flo) = (a, b, fa);
+                for _ in 0..100 {
+                    let mid = (lo + hi) / 2.0;
+                    let fm = side(mid, &mut hint.clone())?;
+                    if fm.signum() == flo.signum() {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                    if curve.subs(lo).near(&curve.subs(hi)) {
+                        break;
+                    }
+                }
+                let t = (lo + hi) / 2.0;
+                let inner = t0 + TOLERANCE < t && t < t1 - TOLERANCE;
+                let pt = curve.subs(t);
+                let on_surface = surface
+                    .search_nearest_parameter(pt, hint, 10)
+                    .is_some_and(|(u, v)| surface.subs(u, v).near(&pt));
+                let distance = (t - start).abs();
+                // A crossing at the curve's end (the one already taken)
+                // doesn't count: walk on past it.
+                if inner && on_surface {
+                    if best.is_none_or(|(d, _, _)| distance < d) {
+                        best = Some((distance, pt, t));
+                    }
+                    break;
+                }
+            }
+            if b == t0 || b == t1 {
+                break;
+            }
+            (a, fa) = (b, fb);
+        }
+    }
+    best.map(|(_, pt, t)| (pt, t))
 }
 
 fn curve_surface_projection<C, S>(
