@@ -113,3 +113,37 @@ fn small_hole_edges_keep_their_side() {
     // its faces.
     assert_eq!(arcs, 8);
 }
+
+/// A prism joined through a block with a round hole, one of its long
+/// edges grazing the hole's wall: the edge crosses the wall twice, close
+/// together. The second intersection curve ending on that edge started
+/// from the mesh's point between the crossings, and Newton's method ran
+/// to the first crossing (already a vertex, the end of the edge as cut),
+/// so the edge couldn't be cut there: no result. The curve's end is now
+/// the crossing inside the edge nearest the mesh's point.
+#[test]
+fn an_edge_grazing_a_hole_crosses_it_twice() {
+    use truck_meshalgo::prelude::*;
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/booleans/edge-grazing-a-hole.json"
+    );
+    let json = std::fs::read_to_string(path).unwrap();
+    let result = run(&json).unwrap();
+    assert_eq!(result.boundaries().len(), 1);
+    // The tool sticks out of the block (into the hole and past the far
+    // face), so the join holds more than the block, and less than both.
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let load = |k: &str| -> Solid {
+        let c: CompressedSolid<Point3, Curve, Surface> =
+            serde_json::from_value(value[k].clone()).unwrap();
+        Solid::extract(c).unwrap()
+    };
+    let volume = |s: &Solid| s.triangulation(0.01).to_polygon().volume();
+    let (block, tool) = (volume(&load("target")), volume(&load("tool")));
+    let joined = volume(&result);
+    assert!(
+        block < joined && joined < block + tool,
+        "{block} {tool} {joined}"
+    );
+}
