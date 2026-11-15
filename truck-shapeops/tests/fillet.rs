@@ -578,3 +578,142 @@ fn fillet_a_d_shapes_top_line() {
         assert!((volume - expected).abs() < 2e-3, "{volume} vs {expected}");
     }
 }
+
+/// A D with the upright edge between its flat side and its wall rounded,
+/// then its top line rounded: the line now ends on that round at one end
+/// (a curved face whose top arc is the line's neighbour) and on the wall
+/// at the other. Searching from the arc's far end, the contact curve's
+/// crossing with it was missed; it's searched for along the arc too.
+#[test]
+fn fillet_a_d_shapes_top_line_after_its_upright_edge() {
+    use truck_modeling::{builder, Curve as MCurve, Surface as MSurface};
+
+    let v0 = builder::vertex(Point3::new(-1.0, 0.0, 0.0));
+    let v1 = builder::vertex(Point3::new(1.0, 0.0, 0.0));
+    let line: truck_modeling::Edge = builder::line(&v0, &v1);
+    let arc: truck_modeling::Edge = builder::circle_arc(&v1, &v0, Point3::new(0.0, 1.0, 0.0));
+    let face: truck_modeling::Face =
+        builder::try_attach_plane(vec![vec![line, arc].into()]).unwrap();
+    let d: truck_modeling::Solid = builder::tsweep(&face, Vector3::unit_z());
+    let mut shell: Shell = d.into_boundaries().pop().unwrap().mapped(
+        |p| *p,
+        |c| match c {
+            MCurve::Line(l) => Curve::Line(*l),
+            MCurve::NurbsCurve(n) => Curve::Nurbs(n.clone()),
+            MCurve::BSplineCurve(b) => Curve::Nurbs(NurbsCurve::from(b.clone())),
+            MCurve::IntersectionCurve(_) => unreachable!(),
+        },
+        |s| match s {
+            MSurface::Plane(p) => Surface::Plane(*p),
+            MSurface::NurbsSurface(n) => Surface::Nurbs(n.clone()),
+            MSurface::BSplineSurface(b) => Surface::Nurbs(NurbsSurface::from(b.clone())),
+            MSurface::RevolutedCurve(_) => unreachable!(),
+        },
+    );
+    let face_at = |shell: &Shell, p: Point3| {
+        shell
+            .face_iter()
+            .position(|f| {
+                let s = f.surface();
+                s.search_parameter(p, None, 10)
+                    .is_some_and(|(u, v)| s.subs(u, v).near(&p))
+            })
+            .unwrap()
+    };
+    let line_between = |shell: &Shell, a: Point3, b: Point3| {
+        shell
+            .edge_iter()
+            .find(|e| {
+                // Within the round's approximation.
+                let close = |p: Point3, q: Point3| p.distance(q) < 1.0e-3;
+                let (p, q) = (e.front().point(), e.back().point());
+                (close(p, a) && close(q, b)) || (close(p, b) && close(q, a))
+            })
+            .unwrap_or_else(|| panic!("no edge {a:?}–{b:?}"))
+    };
+    // The upright edge at x = 1, between the flat side and the wall, with
+    // the bottom and top at its ends.
+    let (flat, wall) = (
+        face_at(&shell, Point3::new(0.0, 0.0, 0.5)),
+        face_at(&shell, Point3::new(0.0, 1.0, 0.5)),
+    );
+    let (bottom, top) = (
+        face_at(&shell, Point3::new(0.0, 0.5, 0.0)),
+        face_at(&shell, Point3::new(0.0, 0.5, 1.0)),
+    );
+    let upright = line_between(
+        &shell,
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 1.0),
+    );
+    let first = fillet_with_side(
+        &shell[flat],
+        &shell[wall],
+        upright.id(),
+        Some(&shell[bottom]),
+        Some(&shell[top]),
+        0.2,
+        0.001,
+    )
+    .unwrap();
+    shell[flat] = first.simple_fillet.face0;
+    shell[wall] = first.simple_fillet.face1;
+    let (side0, side1) = (first.side0.unwrap(), first.side1.unwrap());
+    // Which side is which: the top is the one with points at z = 1.
+    let side_on_top = |f: &Face| f.vertex_iter().all(|v| v.point().z.near(&1.0));
+    let (new_bottom, new_top) = match side_on_top(&side0) {
+        true => (side1, side0),
+        false => (side0, side1),
+    };
+    shell[bottom] = new_bottom;
+    shell[top] = new_top;
+    shell.push(first.simple_fillet.fillet);
+    let round = shell.len() - 1;
+    assert_eq!(shell.shell_condition(), ShellCondition::Closed);
+
+    // The top line now runs from the wall at x = −1 to the round, which
+    // touches the flat side at x = √(0.8² − 0.2²).
+    let x = 0.6_f64.sqrt();
+    let top_line = line_between(
+        &shell,
+        Point3::new(-1.0, 0.0, 1.0),
+        Point3::new(x, 0.0, 1.0),
+    );
+    let ends_of = |v: Point3| {
+        shell
+            .face_iter()
+            .position(|f| {
+                let i = shell.face_iter().position(|g| g.id() == f.id()).unwrap();
+                i != top && i != flat && f.vertex_iter().any(|x| x.point().distance(v) < 1.0e-3)
+            })
+            .unwrap()
+    };
+    let (s0, s1) = (
+        ends_of(Point3::new(-1.0, 0.0, 1.0)),
+        ends_of(Point3::new(x, 0.0, 1.0)),
+    );
+    assert_eq!((s0, s1), (wall, round));
+    let second = fillet_with_side(
+        &shell[top],
+        &shell[flat],
+        top_line.id(),
+        Some(&shell[s0]),
+        Some(&shell[s1]),
+        0.1,
+        0.001,
+    )
+    .unwrap();
+    shell[top] = second.simple_fillet.face0;
+    shell[flat] = second.simple_fillet.face1;
+    shell[s0] = second.side0.unwrap();
+    shell[s1] = second.side1.unwrap();
+    shell.push(second.simple_fillet.fillet);
+    assert_eq!(shell.shell_condition(), ShellCondition::Closed);
+    let volume = shell.robust_triangulation(0.001).to_polygon().volume();
+    // Less than the D, more than the D less both corners' sections along
+    // the whole line (a coarse bound: the rounds take little).
+    assert!(
+        volume < std::f64::consts::PI / 2.0 && volume > std::f64::consts::PI / 2.0 - 0.02,
+        "{volume}"
+    );
+}

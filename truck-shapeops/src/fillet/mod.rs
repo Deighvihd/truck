@@ -44,6 +44,40 @@ fn find_adjacent_edge<P: Clone, C: Clone, S>(
         .map(|(x, _, y)| (x, y))
 }
 
+/// Where `curve` crosses `edge_curve`: searched from the hints, and if
+/// that fails from points along `edge_curve` (from its end the search can
+/// miss the crossing on a curved edge), the crossing within the edge
+/// nearest the edge's hint point (a contact curve can cross an arc twice).
+fn nearest_crossing<C>(
+    curve: &C,
+    edge_curve: &C,
+    curve_hint: f64,
+    edge_hint: f64,
+) -> Option<(f64, f64)>
+where
+    C: ParametricCurve<Point = Point3, Vector = Vector3> + BoundedCurve,
+{
+    if let Some(found) =
+        search_intersection_parameter(curve, edge_curve, (curve_hint, edge_hint), 100)
+    {
+        return Some(found);
+    }
+    let (a, b) = edge_curve.range_tuple();
+    let near = edge_curve.subs(edge_hint);
+    let margin = (b - a) * 1.0e-6;
+    (0..=4)
+        .filter_map(|i| {
+            let h = a + (b - a) * i as f64 / 4.0;
+            search_intersection_parameter(curve, edge_curve, (curve_hint, h), 100)
+        })
+        .filter(|(_, t)| *t >= a - margin && *t <= b + margin)
+        .min_by(|x, y| {
+            let dx = edge_curve.subs(x.1).distance(near);
+            let dy = edge_curve.subs(y.1).distance(near);
+            dx.total_cmp(&dy)
+        })
+}
+
 #[allow(clippy::type_complexity)]
 fn cut_face_by_curve<C, S>(
     face: &Face<Point3, C, S>,
@@ -63,8 +97,7 @@ where
             false => front_curve.range_tuple().0,
         };
         let curve_hint = curve.range_tuple().0;
-        let hint = (curve_hint, front_curve_hint);
-        let (t0, t1) = search_intersection_parameter(&curve, &front_curve, hint, 100)?;
+        let (t0, t1) = nearest_crossing(&curve, &front_curve, curve_hint, front_curve_hint)?;
         let p = curve.subs(t0).midpoint(front_curve.subs(t1));
         let v0 = Vertex::new(p);
         if !curve_hint.near(&t0) {
@@ -92,8 +125,7 @@ where
             false => back_curve.range_tuple().1,
         };
         let curve_hint = curve.range_tuple().1;
-        let hint = (curve_hint, back_curve_hint);
-        let (t0, t1) = search_intersection_parameter(&curve, &back_curve, hint, 100)?;
+        let (t0, t1) = nearest_crossing(&curve, &back_curve, curve_hint, back_curve_hint)?;
         let p = curve.subs(t0).midpoint(back_curve.subs(t1));
         let v1 = Vertex::new(p);
         if !t0.near(&curve_hint) {
@@ -261,6 +293,31 @@ where
         RbfSurface::new(curve, surface0, surface1, radius)
     };
 
+    // Where a contact curve crosses an adjacent edge: from the hint, else
+    // from points along the edge (the search can miss the crossing from an
+    // end of a curved edge: a round's arc where the edge ends on it).
+    // The crossing within the edge nearest the hint's point, if the hint
+    // alone finds none (a contact curve can cross an arc twice).
+    fn nearest<C: ParametricCurve<Point = Point3, Vector = Vector3> + BoundedCurve>(
+        curve: &C,
+        hint: f64,
+        search: impl Fn(f64) -> Option<(ContactPoint, ContactPoint, f64, f64)>,
+    ) -> Option<(ContactPoint, ContactPoint, f64, f64)> {
+        if let Some(found) = search(hint) {
+            return Some(found);
+        }
+        let (a, b) = curve.range_tuple();
+        let near = curve.subs(hint);
+        let margin = (b - a) * 1.0e-6;
+        (0..=4)
+            .filter_map(|i| search(a + (b - a) * i as f64 / 4.0))
+            .filter(|found| found.3 >= a - margin && found.3 <= b + margin)
+            .min_by(|x, y| {
+                let dx = curve.subs(x.3).distance(near);
+                let dy = curve.subs(y.3).distance(near);
+                dx.total_cmp(&dy)
+            })
+    }
     let vrange = {
         let (t0, t1) = strict_surface.edge_curve().range_tuple();
 
@@ -268,25 +325,33 @@ where
 
         let curve00 = front_edge0.oriented_curve();
         let (_, s00_hint) = curve00.range_tuple();
-        let (_, _, v00, _) = strict_surface
-            .search_contact_curve0_cross_point_with_adjacent_edge(t0, &curve00, s00_hint, 100)?;
+        let (_, _, v00, _) = nearest(&curve00, s00_hint, |h| {
+            strict_surface
+                .search_contact_curve0_cross_point_with_adjacent_edge(t0, &curve00, h, 100)
+        })?;
 
         let curve10 = back_edge0.oriented_curve();
         let (s10_hint, _) = curve10.range_tuple();
-        let (_, _, v10, _) = strict_surface
-            .search_contact_curve0_cross_point_with_adjacent_edge(t1, &curve10, s10_hint, 100)?;
+        let (_, _, v10, _) = nearest(&curve10, s10_hint, |h| {
+            strict_surface
+                .search_contact_curve0_cross_point_with_adjacent_edge(t1, &curve10, h, 100)
+        })?;
 
         let (front_edge1, back_edge1) = find_adjacent_edge(face1, filleted_edge_id)?;
 
         let curve11 = front_edge1.oriented_curve();
         let (_, s11_hint) = curve11.range_tuple();
-        let (_, _, v11, _) = strict_surface
-            .search_contact_curve1_cross_point_with_adjacent_edge(t1, &curve11, s11_hint, 100)?;
+        let (_, _, v11, _) = nearest(&curve11, s11_hint, |h| {
+            strict_surface
+                .search_contact_curve1_cross_point_with_adjacent_edge(t1, &curve11, h, 100)
+        })?;
 
         let curve01 = back_edge1.oriented_curve();
         let (s01_hint, _) = curve01.range_tuple();
-        let (_, _, v01, _) = strict_surface
-            .search_contact_curve1_cross_point_with_adjacent_edge(t0, &curve01, s01_hint, 100)?;
+        let (_, _, v01, _) = nearest(&curve01, s01_hint, |h| {
+            strict_surface
+                .search_contact_curve1_cross_point_with_adjacent_edge(t0, &curve01, h, 100)
+        })?;
 
         (v00.min(v01), v10.max(v11))
     };
