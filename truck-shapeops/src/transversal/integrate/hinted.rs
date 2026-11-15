@@ -21,8 +21,8 @@ pub(super) struct HintedIntersectionCurve<'a, S> {
     hints: Vec<(Point2, Point2)>,
     /// Arc length along the leader at each of its vertices.
     lengths: Vec<f64>,
-    /// How far a hinted result may be from the leader before it is distrusted.
-    bound: f64,
+    /// The boolean's tolerance.
+    tol: f64,
 }
 
 const TRIALS: usize = 100;
@@ -37,12 +37,29 @@ where S: ParametricSurface3D + SearchNearestParameter<D2, Point = Point3>
         curve: &'a IntersectionCurve<PolylineCurve<Point3>, S, S>,
         tol: f64,
     ) -> Option<Self> {
-        let bound = 10.0 * tol;
         let leader = curve.leader();
-        let mut hints = Vec::with_capacity(leader.len());
+        let mut lengths = Vec::with_capacity(leader.len());
+        let mut length = 0.0;
+        for (i, point) in leader.iter().enumerate() {
+            if i > 0 {
+                length += point.distance(leader[i - 1]);
+            }
+            lengths.push(length);
+        }
+        let mut walk = Self {
+            curve,
+            hints: Vec::with_capacity(leader.len()),
+            lengths,
+            tol,
+        };
         let mut previous: Option<(Point2, Point2)> = None;
         for (i, target) in leader.iter().enumerate() {
             let t = i as f64;
+            // A vertex lies on the curve: near it, the curve stays within
+            // the longer of the segments beside it.
+            let bound = walk
+                .bound(i.saturating_sub(1))
+                .max(walk.bound(i.min(leader.len().saturating_sub(2))));
             let walked = previous.and_then(|(uv0, uv1)| {
                 curve
                     .search_triple_with_hints(t, uv0.into(), uv1.into(), TRIALS)
@@ -52,23 +69,23 @@ where S: ParametricSurface3D + SearchNearestParameter<D2, Point = Point3>
                 Some(found) => found,
                 None => curve.search_triple(t, TRIALS)?,
             };
-            hints.push((uv0, uv1));
+            walk.hints.push((uv0, uv1));
             previous = Some((uv0, uv1));
         }
-        let mut lengths = Vec::with_capacity(leader.len());
-        let mut length = 0.0;
-        for (i, point) in leader.iter().enumerate() {
-            if i > 0 {
-                length += point.distance(leader[i - 1]);
-            }
-            lengths.push(length);
-        }
-        Some(Self {
-            curve,
-            hints,
-            lengths,
-            bound,
-        })
+        Some(walk)
+    }
+
+    /// How far a point found for the leader's segment `i` may be from the
+    /// leader before it is distrusted (e.g. converged to another branch):
+    /// the curve between two vertices strays from their chord by less
+    /// than the chord's length, so no further than that, within 2 to 10
+    /// tolerances. A fixed 10 tolerances let a small circle's points jump
+    /// across it: a hole a few tolerances wide through a face got an edge
+    /// whose second half ran round the other side of the hole.
+    fn bound(&self, i: usize) -> f64 {
+        let last = self.lengths.len().saturating_sub(1);
+        let chord = self.lengths[(i + 1).min(last)] - self.lengths[i.min(last)];
+        chord.clamp(2.0 * self.tol, 10.0 * self.tol)
     }
 
     /// The leader parameter at arc length `s`, and its rate of change.
@@ -106,11 +123,16 @@ where S: ParametricSurface3D + SearchNearestParameter<D2, Point = Point3>
         let hint0 = a0 + (b0 - a0) * s;
         let hint1 = a1 + (b1 - a1) * s;
         let target = self.curve.leader().subs(t);
+        let bound = self.bound(i);
+        let near = |p: &Point3| p.distance(target) < bound;
+        // Without a hinted result, a full search; failing that (it can find
+        // the other branch too), the leader's own point, which is close.
         self.curve
             .search_triple_with_hints(t, hint0.into(), hint1.into(), TRIALS)
-            .filter(|(p, _, _)| p.distance(target) < self.bound)
             .map(|(p, _, _)| p)
-            .unwrap_or_else(|| self.curve.subs(t))
+            .filter(near)
+            .or_else(|| Some(self.curve.subs(t)).filter(near))
+            .unwrap_or(target)
     }
     fn der(&self, s: f64) -> Vector3 {
         let (t, dt) = self.leader_parameter(s);

@@ -74,3 +74,42 @@ fn face_splits_through_a_vertex_twice() {
     let result = run(&std::fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(result.boundaries().len(), 1);
 }
+
+/// A hole about four tolerances wide (radius 0.48) cut up through a tall
+/// block from below its bottom face. The tool's lower half crosses the
+/// bottom face along a half circle, and finding that curve's points
+/// trusted any point within 10 tolerances of its leader: the far side of
+/// the hole too. The edge's second half ran round the upper side, so the
+/// bottom face had the upper half circle twice (its mesh doubled). Each
+/// edge along the hole now stays on its own side of the hole's axis.
+#[test]
+fn small_hole_edges_keep_their_side() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/booleans/thin-hole-from-bottom.json"
+    );
+    let result = run(&std::fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(result.boundaries().len(), 1);
+    // The hole's axis and radius (working units, as rcad dumped them).
+    let (cx, cy, r) = (4.0101875, -1.9310656, 0.4796875);
+    let tol = 0.125;
+    let mut arcs = 0;
+    for edge in result.edge_iter() {
+        let curve = edge.curve();
+        if matches!(curve, Curve::Line(_)) {
+            continue;
+        }
+        arcs += 1;
+        let (t0, t1) = curve.range_tuple();
+        let side = (curve.subs((t0 + t1) / 2.0).y - cy).signum();
+        for i in 0..=32 {
+            let p = curve.subs(t0 + (t1 - t0) * i as f64 / 32.0);
+            let off = ((p.x - cx).powi(2) + (p.y - cy).powi(2)).sqrt() - r;
+            assert!(off.abs() < tol, "{p:?} is {off} off the hole");
+            assert!((p.y - cy) * side > -tol, "{p:?} is across the hole");
+        }
+    }
+    // Two half circles at each end of the hole, each seen from both of
+    // its faces.
+    assert_eq!(arcs, 8);
+}
